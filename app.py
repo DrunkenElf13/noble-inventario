@@ -128,12 +128,19 @@ elif st.session_state.pagina == "Inventario":
         grps = sorted(df_u["Grupo"].unique().tolist()) if not df_u.empty else ["A"]
         g_sel = st.selectbox("📂 Grupo", grps)
 
+    # Preparar el historial previo para comparativas
+    if not df_historial.empty:
+        df_historial['Fecha de Inventario'] = pd.to_datetime(df_historial['Fecha de Inventario'])
+        ultimo_registro = df_historial.sort_values('Fecha de Inventario').drop_duplicates(['Unidad de Negocio', 'Nombre del Insumo'], keep='last')
+    else:
+        ultimo_registro = pd.DataFrame()
+
     df_f = df_u[df_u["Grupo"] == g_sel].reset_index(drop=True)
     if not df_f.empty:
         regs = {}
-        # Encabezados
+        # Encabezados ajustados
         h1, h2, h3, h4, h5, h6 = st.columns([2.5, 1, 1, 1, 1, 1])
-        with h1: st.write("**Insumo**")
+        with h1: st.write("**Insumo / Referencia**")
         with h2: st.write("**Alm.**")
         with h3: st.write("**Barra**")
         with h4: st.write("**Medida**")
@@ -142,11 +149,22 @@ elif st.session_state.pagina == "Inventario":
         st.divider()
 
         for i, row in df_f.iterrows():
+            nom_ins = row['Nombre del Insumo']
+            
+            # Obtener datos previos del historial
+            prev = ultimo_registro[(ultimo_registro['Unidad de Negocio'] == u_sel) & (ultimo_registro['Nombre del Insumo'] == nom_ins)]
+            v_prev = prev.iloc[0]['Stock Neto'] if not prev.empty else 0.0
+            v_min = float(row.get('Stock Mínimo', 0) or 0)
+            
             c1, c2, c3, c4, c5, c6 = st.columns([2.5, 1, 1, 1, 1, 1])
             with c1: 
-                st.write(f"**{row['Nombre del Insumo']}**")
-                # SECCIÓN SOLICITADA: Marca y Proveedor debajo del nombre
+                st.write(f"**{nom_ins}**")
                 st.caption(f"Marca: {row.get('Marca','n/a')} | Prov: {row.get('Proveedor','n/a')}")
+                # DATA DE REFERENCIA SOLICITADA:
+                diff = v_prev - v_min
+                color_diff = "green" if diff > 0 else "red"
+                st.markdown(f"<small>Anterior: <b>{v_prev}</b> | Mín: <b>{v_min}</b> (<span style='color:{color_diff}'>{diff:+.1f}</span>)</small>", unsafe_allow_html=True)
+
             with c2: v_alm = st.number_input("A", min_value=0.0, step=1.0, key=f"a{i}", label_visibility="collapsed")
             with c3: v_bar = st.number_input("B", min_value=0.0, step=0.1, key=f"b{i}", label_visibility="collapsed")
             with c4:
@@ -158,7 +176,7 @@ elif st.session_state.pagina == "Inventario":
                 st.write(f"**{v_neto:.1f}**")
             with c6: v_com = st.toggle("P", value=False, key=f"p{i}")
             
-            regs[row['Nombre del Insumo']] = {"alm": v_alm, "bar": v_bar, "neto": v_neto, "um": v_uni, "ped": v_com, "row": row}
+            regs[nom_ins] = {"alm": v_alm, "bar": v_bar, "neto": v_neto, "um": v_uni, "ped": v_com, "row": row}
             st.divider()
 
         if st.button("📥 GUARDAR REGISTRO", use_container_width=True, type="primary"):
