@@ -20,10 +20,10 @@ try:
     insumos_sheet = sh.worksheet("Insumos")
     historial_sheet = sh.worksheet("Historial")
 except Exception as e:
-    st.error("Error de conexión. Revisa los Secrets de Streamlit.")
+    st.error("Error de conexión. Revisa los Secrets.")
     st.stop()
 
-# 2. CARGA DE DATOS CON MANEJO DE ERRORES
+# 2. CARGA DE DATOS
 @st.cache_data(ttl=30)
 def cargar_datos_maestros():
     data = insumos_sheet.get_all_records()
@@ -40,7 +40,7 @@ def cargar_historial():
 df_raw = cargar_datos_maestros()
 df_historial = cargar_historial()
 
-# 3. LÓGICA DE NAVEGACIÓN
+# 3. NAVEGACIÓN
 if "pagina" not in st.session_state:
     st.session_state.pagina = "Portada"
 
@@ -48,7 +48,7 @@ def cambiar_pagina(nombre):
     st.session_state.pagina = nombre
     st.rerun()
 
-# --- SIDEBAR: GESTIÓN DE EQUIPO E INSUMOS ---
+# --- SIDEBAR (CON GESTIÓN COMPLETA) ---
 with st.sidebar:
     st.title("⚙️ Operaciones")
     if st.button("🏠 Portada / Compras", use_container_width=True): cambiar_pagina("Portada")
@@ -64,22 +64,21 @@ with st.sidebar:
             if n_nom: st.session_state.responsables.append(n_nom); st.rerun()
 
     st.divider()
-    st.subheader("📦 Gestión de Catálogo")
-    op_insumo = st.radio("Acción:", ["Añadir Nuevo", "Editar Existente"])
+    op_insumo = st.radio("Insumos:", ["Añadir", "Editar"])
 
-    if op_insumo == "Añadir Nuevo":
+    if op_insumo == "Añadir":
         with st.form("f_add"):
             u = st.selectbox("Unidad", ["Noble", "Coffee Station"])
-            n = st.text_input("Nombre del Insumo")
+            n = st.text_input("Nombre")
             m = st.text_input("Marca")
             p = st.text_input("Proveedor")
             g = st.selectbox("Grupo", ["A", "B", "C", "D", "E", "F"])
             uc = st.text_input("Presentación de Compra")
             um = st.selectbox("Unidad de Medida", ["pz", "ml", "gr", "%", "kg", "lt"])
-            sm = st.number_input("Stock Mínimo", min_value=0.0)
-            if st.form_submit_button("✨ Crear Insumo"):
+            sm = st.number_input("Mínimo", min_value=0.0)
+            if st.form_submit_button("✨ Crear"):
                 insumos_sheet.append_row([u, n, m, p, g, "", uc, um, "", "", "", sm])
-                st.cache_data.clear(); st.success("Creado correctamente"); st.rerun()
+                st.cache_data.clear(); st.rerun()
     else:
         if not df_raw.empty:
             ins_editar = st.selectbox("Insumo a editar:", df_raw["Nombre del Insumo"].tolist())
@@ -94,15 +93,13 @@ with st.sidebar:
                 list_u = ["pz", "ml", "gr", "%", "kg", "lt"]
                 u_val = str(d.get("Unidad de Medida","pz")).lower()
                 e_um = st.selectbox("Medida", list_u, index=list_u.index(u_val) if u_val in list_u else 0)
-                # Manejo de error para valor mínimo no numérico
-                try: val_min_init = float(d.get("Stock Mínimo", 0) or 0)
-                except: val_min_init = 0.0
-                e_sm = st.number_input("Mínimo", value=val_min_init)
-                
+                try: v_init_min = float(d.get("Stock Mínimo", 0) or 0)
+                except: v_init_min = 0.0
+                e_sm = st.number_input("Mínimo", value=v_init_min)
                 if st.form_submit_button("💾 Actualizar"):
                     idx = df_raw[df_raw["Nombre del Insumo"] == ins_editar].index[0] + 2
                     insumos_sheet.update(f'A{idx}:L{idx}', [[e_u, e_n, e_m, e_p, e_g, "", e_uc, e_um, "", "", "", e_sm]])
-                    st.cache_data.clear(); st.success("Actualizado"); st.rerun()
+                    st.cache_data.clear(); st.rerun()
 
 # --- PÁGINA: PORTADA ---
 if st.session_state.pagina == "Portada":
@@ -117,21 +114,19 @@ if st.session_state.pagina == "Portada":
             with c1: st.metric("Noble: Críticos", len(criticos[criticos['Unidad de Negocio']=="Noble"]))
             with c2: st.metric("Coffee Station: Críticos", len(criticos[criticos['Unidad de Negocio']=="Coffee Station"]))
             
-            st.divider()
-            suc = st.radio("Sucursal a revisar:", ["Noble", "Coffee Station"], horizontal=True)
+            suc = st.radio("Ver Sucursal:", ["Noble", "Coffee Station"], horizontal=True)
             lista = criticos[criticos['Unidad de Negocio'] == suc]
             if not lista.empty:
                 for _, r in lista.iterrows():
                     with st.expander(f"🔴 {r['Nombre del Insumo']} (Stock: {r['Stock Neto']})"):
                         st.write(f"**Marca:** {r.get('Marca','')} | **Proveedor:** {r.get('Proveedor','')}")
                         st.caption(f"Registrado por {r.get('Responsable','-')} el {r['Fecha de Inventario'].strftime('%d/%m %H:%M')}")
-            else: st.success(f"✅ Todo en orden para {suc}")
-        except: st.warning("Error procesando historial. Verifica los encabezados del Sheets.")
-    else: st.info("Sin registros previos en el historial.")
-    
-    if st.button("🚀 NUEVO LEVANTAMIENTO", use_container_width=True, type="primary"): cambiar_pagina("Inventario")
+            else: st.success(f"✅ Sin faltantes en {suc}")
+        except: st.info("Procesando datos...")
+    else: st.info("Inicia un inventario para ver prioridades.")
+    if st.button("🚀 INICIAR INVENTARIO", use_container_width=True, type="primary"): cambiar_pagina("Inventario")
 
-# --- PÁGINA: INVENTARIO (BLINDADA) ---
+# --- PÁGINA: INVENTARIO ---
 elif st.session_state.pagina == "Inventario":
     st.title("📝 Levantamiento de Stock")
     c_u, c_r, c_g = st.columns(3)
@@ -142,9 +137,8 @@ elif st.session_state.pagina == "Inventario":
         grps = sorted(df_u["Grupo"].unique().tolist()) if not df_u.empty else ["A"]
         g_sel = st.selectbox("📂 Grupo", grps)
 
-    # Referencias de historial seguras
     ultimo_registro = pd.DataFrame()
-    if not df_historial.empty and all(col in df_historial.columns for col in ["Unidad de Negocio", "Nombre del Insumo", "Stock Neto"]):
+    if not df_historial.empty and "Nombre del Insumo" in df_historial.columns:
         try:
             df_historial['Fecha de Inventario'] = pd.to_datetime(df_historial['Fecha de Inventario'])
             ultimo_registro = df_historial.sort_values('Fecha de Inventario').drop_duplicates(['Unidad de Negocio', 'Nombre del Insumo'], keep='last')
@@ -165,13 +159,10 @@ elif st.session_state.pagina == "Inventario":
 
         for i, row in df_f.iterrows():
             nom = row['Nombre del Insumo']
-            
-            # Cálculo seguro de valores previos
             v_prev = 0.0
             if not ultimo_registro.empty:
-                prev_match = ultimo_registro[(ultimo_registro['Unidad de Negocio'] == u_sel) & (ultimo_registro['Nombre del Insumo'] == nom)]
-                if not prev_match.empty:
-                    v_prev = float(prev_match.iloc[0].get('Stock Neto', 0.0))
+                match = ultimo_registro[(ultimo_registro['Unidad de Negocio'] == u_sel) & (ultimo_registro['Nombre del Insumo'] == nom)]
+                if not match.empty: v_prev = float(match.iloc[0].get('Stock Neto', 0.0))
 
             try: v_min = float(row.get('Stock Mínimo', 0) or 0)
             except: v_min = 0.0
@@ -180,7 +171,8 @@ elif st.session_state.pagina == "Inventario":
                 c1, c2, c3, c4, c5, c6 = st.columns([2.5, 1, 1, 1, 1, 1])
                 with c1: 
                     st.write(f"**{nom}**")
-                    st.caption(f"M: {row.get('Marca','-')} | P: {row.get('Proveedor','-')}")
+                    # ACTUALIZACIÓN: Palabras completas Marca y Proveedor
+                    st.caption(f"Marca: {row.get('Marca','-')} | Proveedor: {row.get('Proveedor','-')}")
                     diff = v_prev - v_min
                     color = "green" if diff > 0 else "red"
                     st.markdown(f"<small>Ant: {v_prev} | Mín: {v_min} (<span style='color:{color}'>{diff:+.1f}</span>)</small>", unsafe_allow_html=True)
@@ -199,7 +191,7 @@ elif st.session_state.pagina == "Inventario":
                 regs[nom] = {"alm": v_a, "bar": v_b, "neto": v_n, "um": v_u, "ped": v_p, "row": row}
             st.divider()
 
-        if st.button("📥 FINALIZAR Y ENVIAR", use_container_width=True, type="primary"):
+        if st.button("📥 FINALIZAR Y GUARDAR", use_container_width=True, type="primary"):
             filas = []
             fh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for n, info in regs.items():
@@ -208,5 +200,4 @@ elif st.session_state.pagina == "Inventario":
                               dm.get('Presentación de Compra',''), info["um"], info["alm"], info["bar"], 
                               info["neto"], dm.get('Stock Mínimo',0), "TRUE" if info["ped"] else "FALSE", r_sel, fh])
             historial_sheet.append_rows(filas)
-            st.cache_data.clear(); st.success("Inventario guardado"); st.balloons()
-    else: st.warning("No hay insumos configurados para esta unidad/grupo.")
+            st.cache_data.clear(); st.success("Guardado correctamente"); st.balloons()
