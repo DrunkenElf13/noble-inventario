@@ -66,6 +66,9 @@ with st.sidebar:
     st.write("**📦 Movimientos de Stock:**")
     if st.button("📝 1. Conteo de Inventario", use_container_width=True): cambiar_pagina("Inventario")
     if st.button("📥 2. Ingreso de Compras", use_container_width=True): cambiar_pagina("Ingresos")
+
+    if st.button("📦 3. Ver Inventario Actual", use_container_width=True): 
+    cambiar_pagina("Consulta")
     
     st.divider()
     st.write("**🖨️ Tickets (58mm):**")
@@ -218,7 +221,7 @@ elif st.session_state.pagina == "Inventario":
                     st.markdown(f"<small>Anterior: {v_prev} | Mín: {v_min} (<span style='color:{color}'>{diff:+.1f}</span>)</small>", unsafe_allow_html=True)
                 
                 with c2: v_a = st.number_input("Alm", min_value=0.0, step=1.0, key=f"a_{i}", label_visibility="collapsed")
-                with c3: v_b = st.number_input("Bar", min_value=0.0, step=1.0, key=f"b_{i}", label_visibility="collapsed")
+                with c3: v_b = st.number_input("Bar", min_value=0.0, step=0.1, key=f"b_{i}", label_visibility="collapsed")
                 
                 with c4:
                     u_list = ["pz", "ml", "gr", "%", "kg", "lt"]
@@ -371,3 +374,47 @@ elif st.session_state.pagina == "ListaCompra":
             st.text_area("Copia este texto para llevarlo de compras:", value=t, height=450)
         else: 
             st.success("¡Todo está en orden! No hay pedidos pendientes marcados en el último inventario.")
+            
+# --- 9. INVENTARIO COMPLETO CONSOLIDADO ---
+elif st.session_state.pagina == "Consulta":
+    st.title("📦 Inventario Completo (Sistema Real)")
+
+    u_sel = st.radio("Sucursal:", ["Noble", "Coffee Station"], horizontal=True)
+
+    df_inv = construir_inventario_actual(df_historial, u_sel)
+
+    if not df_inv.empty:
+        st.success("Vista consolidada del inventario actual (no captura).")
+
+        # Indicadores
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Insumos Totales", len(df_inv))
+        with col2:
+            bajo = df_inv[df_inv['Stock Neto Calculado'] < df_inv['Stock Mínimo']]
+            st.metric("Bajo Mínimo", len(bajo))
+        with col3:
+            st.metric("Stock Total", round(df_inv['Stock Neto Calculado'].sum(), 1))
+
+        st.divider()
+
+        # Tabla completa
+        st.dataframe(
+            df_inv[['Nombre del Insumo','Grupo','Alm','Barra','Stock Neto Calculado','Stock Mínimo','Necesita Compra','Fecha de Inventario']],
+            use_container_width=True
+        )
+
+        # ALERTAS REALES
+        st.divider()
+        st.subheader("⚠️ Alertas de Stock")
+
+        alertas = df_inv[df_inv['Stock Neto Calculado'] < df_inv['Stock Mínimo']]
+
+        if not alertas.empty:
+            for _, r in alertas.iterrows():
+                st.error(f"{r['Nombre del Insumo']} → {r['Stock Neto Calculado']} / Min {r['Stock Mínimo']}")
+        else:
+            st.success("Todo el inventario está sano.")
+
+    else:
+        st.warning("No hay información suficiente.")
