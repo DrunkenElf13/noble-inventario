@@ -1,12 +1,3 @@
-Protocolo de Restricción Absoluta activado. Intervención quirúrgica ejecutada.
-
-He reubicado el "candado" de seguridad. En lugar de bloquear la aplicación entera con un `st.stop()`, he movido el formulario de inicio de sesión al menú lateral (Sidebar) y lo he condicionado para que las pantallas de consulta sean públicas. 
-
-Ahora, cualquiera puede abrir la app y ver el Dashboard, el Inventario Actual y las Listas de Impresión sin requerir PIN. Sin embargo, si intentan acceder a "Capturar inventario" o "Entrada de compras" sin haber iniciado sesión en el menú lateral, el sistema les bloqueará la interfaz de captura. Al iniciar sesión con un PIN válido, la interfaz se desbloquea firmando las acciones con su nombre real.
-
-### ✅ CÓDIGO PRODUCTIVO FINAL (COPIAR Y REEMPLAZAR TODO)
-
-```python
 import streamlit as st
 from google.oauth2.service_account import Credentials
 import gspread
@@ -34,27 +25,20 @@ sh = conectar_google_sheets()
 
 # --- 2. CAPA DE LIMPIEZA Y NORMALIZACIÓN DE DATOS ---
 def limpiar_valor(valor):
-    """Limpia valores nulos o con símbolos para evitar excepciones de tipo flotante."""
     if pd.isna(valor) or valor is None or str(valor).strip() == "": 
         return 0.0
     if isinstance(valor, (int, float)): 
         return float(valor)
     try:
-        # Remueve símbolos comunes que rompen cálculos numéricos
         s = str(valor).replace('%', '').replace('$', '').replace(',', '').strip()
         return float(s)
     except Exception: 
         return 0.0
 
 def normalizar_dataframe(df, columnas_esperadas):
-    """
-    WRAPPER MEJORADO: Garantiza que el DF tenga las columnas mapeadas por POSICIÓN exacta.
-    Ignora por completo cómo se llaman los encabezados en Google Sheets para evitar el bug de '0.0'.
-    """
     if df.empty:
         return pd.DataFrame(columns=columnas_esperadas)
     
-    # 1. Mapeo posicional estricto: forzamos el nombre de la columna según su índice real
     columnas_actuales = list(df.columns)
     nuevos_nombres = []
     
@@ -62,11 +46,10 @@ def normalizar_dataframe(df, columnas_esperadas):
         if i < len(columnas_esperadas):
             nuevos_nombres.append(columnas_esperadas[i])
         else:
-            nuevos_nombres.append(columnas_actuales[i]) # Mantiene data extra sin romper
+            nuevos_nombres.append(columnas_actuales[i])
             
     df.columns = nuevos_nombres
     
-    # 2. Inyectar columnas faltantes para evitar KeyErrors silenciosos al final de la matriz
     for col in columnas_esperadas:
         if col not in df.columns:
             df[col] = None 
@@ -75,15 +58,12 @@ def normalizar_dataframe(df, columnas_esperadas):
 
 @st.cache_data(ttl=15)
 def cargar_datos_integrales():
-    """Descarga, limpia y estandariza los datos de la base leyendo la matriz cruda."""
     if not sh: return pd.DataFrame(), pd.DataFrame()
     
     try:
-        # EXTRACCIÓN SEGURA: get_all_values() trae matriz pura, ignorando fallos de encabezados en Sheets
         val_ins = sh.worksheet("Insumos").get_all_values()
         val_his = sh.worksheet("Historial").get_all_values()
         
-        # Intentar cargar Cierres (Snapshot inicial)
         try:
             val_cie = sh.worksheet("Cierres").get_all_values()
         except:
@@ -104,24 +84,20 @@ def cargar_datos_integrales():
         else:
             df_cie = pd.DataFrame()
             
-        # ANCLA DE SEGURIDAD: Guardamos la fila real de Google Sheets antes de limpiar el DF
         df_ins['Sheet_Row_Num'] = df_ins.index + 2
         
-        # PLANTILLAS ESTRICTAS DE POSICIÓN
         cols_insumos = ['Unidad de Negocio', 'Nombre del Insumo', 'Marca', 'Proveedor', 'Grupo', 'Espacio_1', 'Presentación de Compra', 'Unidad de Medida', 'Espacio_2', 'Espacio_3', 'Espacio_4', 'Stock Mínimo']
         cols_historial = ['Unidad de Negocio', 'Nombre del Insumo', 'Marca_H', 'Proveedor_H', 'Grupo_H', 'Espacio_H', 'Pres_Compra_H', 'Unidad_Medida_H', 'Alm', 'Barra', 'Stock Neto', 'Stock Mínimo', 'Necesita Compra', 'Responsable', 'Fecha de Inventario', 'Comentarios']
         
         df_ins = normalizar_dataframe(df_ins, cols_insumos)
         df_his = normalizar_dataframe(df_his, cols_historial)
         
-        # Si hay cierres, unirlos al historial para tener la base completa
         if not df_cie.empty:
             df_cie = normalizar_dataframe(df_cie, cols_historial)
             df_total_his = pd.concat([df_cie, df_his], ignore_index=True)
         else:
             df_total_his = df_his
         
-        # Parseo seguro de fechas para ordenamiento cronológico. 
         if not df_total_his.empty:
             df_total_his['Fecha de Inventario'] = pd.to_datetime(df_total_his['Fecha de Inventario'], errors='coerce')
             df_total_his['Espacio_H'] = pd.to_datetime(df_total_his['Espacio_H'], errors='coerce')
@@ -132,12 +108,10 @@ def cargar_datos_integrales():
         st.error(f"Falla en la extracción de datos: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
-# Carga inicial global
 df_raw, df_historial = cargar_datos_integrales()
 
 # --- 3. LÓGICA DE NEGOCIO ---
 def obtener_ultimo_inventario(df_hist, unidad=None):
-    """Devuelve una foto del último stock registrado por insumo."""
     if df_hist.empty: return pd.DataFrame()
     
     df_u = df_hist.copy()
@@ -146,13 +120,9 @@ def obtener_ultimo_inventario(df_hist, unidad=None):
         
     if df_u.empty: return pd.DataFrame()
     
-    # UNIFICACIÓN DE FECHAS: Toma la fecha de Col O (Inventarios), y si está vacía usa Col F (Ingresos)
     df_u['Fecha de Inventario'] = df_u['Fecha de Inventario'].combine_first(df_u['Espacio_H'])
-    
-    # Ordenar cronológicamente y mantener solo el registro más reciente por Insumo y Unidad
     df_actual = df_u.sort_values('Fecha de Inventario', ascending=True, na_position='first').drop_duplicates(subset=['Unidad de Negocio', 'Nombre del Insumo'], keep='last').copy()
     
-    # Estandarización matemática estricta
     for col in ['Alm', 'Barra', 'Stock Neto', 'Stock Mínimo']:
         df_actual[col] = df_actual[col].apply(limpiar_valor)
         
@@ -169,7 +139,6 @@ if "current_user" not in st.session_state:
 if "user_role" not in st.session_state:
     st.session_state.user_role = None
 
-# Base de datos local de accesos (CAMBIAR AQUÍ LOS PINs DE 6 DÍGITOS)
 USUARIOS_PIN = {
     "123456": {"nombre": "Raúl", "rol": "admin"},
     "111111": {"nombre": "Jenny", "rol": "barista"},
@@ -204,7 +173,6 @@ with st.sidebar:
                 else:
                     st.error("⚠️ PIN incorrecto o no registrado.")
     else:
-        # Módulo de Sesión Activa
         st.write(f"👤 Operador: **{st.session_state.current_user}**")
         if st.button("🚪 Cerrar Sesión", use_container_width=True):
             st.session_state.auth_status = False
@@ -229,7 +197,6 @@ with st.sidebar:
     if st.button("🛒 2. Lista de Compra", use_container_width=True): cambiar_pagina("ListaCompra")
     if st.button("📦 3. Reporte de Stock", use_container_width=True): cambiar_pagina("ReporteStock")
     
-    # Bloque exclusivo para Administradores
     if st.session_state.user_role == "admin":
         st.divider()
         st.write("**🛠️ Administración:**")
@@ -293,8 +260,11 @@ with st.sidebar:
                     
                     if st.form_submit_button("💾 Actualizar Insumo"):
                         try:
-                            # Uso de ancla segura de índice para evitar fallos si se han filtrado valores vacíos
-                            idx = int(d.get('Sheet_Row_Num', df_raw[df_raw["Nombre del Insumo"] == ins_edit].index[0] + 2))
+                            try:
+                                idx = int(d['Sheet_Row_Num'])
+                            except KeyError:
+                                idx = int(df_raw[df_raw["Nombre del Insumo"] == ins_edit].index[0] + 2)
+                                
                             fila_act = [[e_u, e_n, e_m, e_p, e_g, "", e_uc, e_um, "", "", "", e_sm]]
                             sh.worksheet("Insumos").update(range_name=f'A{idx}:L{idx}', values=fila_act)
                             st.cache_data.clear()
@@ -303,13 +273,11 @@ with st.sidebar:
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error al sincronizar catálogo: {e}")
-
-# --- 6. VISTAS PRINCIPALES ---
+                            # --- 6. VISTAS PRINCIPALES ---
 
 if st.session_state.pagina == "Dashboard":
     st.title("📊 Dashboard Operativo")
     
-    # Lógica de Recordatorio de Cierre (Solo visible para admins si es necesario, pero lo dejamos global por diseño)
     ahora = datetime.now()
     ultimo_dia_mes = calendar.monthrange(ahora.year, ahora.month)[1]
     dias_faltantes = ultimo_dia_mes - ahora.day
@@ -350,7 +318,6 @@ if st.session_state.pagina == "Dashboard":
         
         st.divider()
         st.subheader("🕒 Actividad Reciente (Logs)")
-        # Para el display de logs del dashboard, rellenamos Fecha de Inventario unificada
         df_log_display = df_historial.copy()
         df_log_display['Fecha de Inventario'] = df_log_display['Fecha de Inventario'].combine_first(df_log_display['Espacio_H'])
         logs_mostrar = df_log_display.dropna(subset=['Fecha de Inventario']).sort_values('Fecha de Inventario', ascending=False)
@@ -366,7 +333,6 @@ elif st.session_state.pagina == "Inventario":
         col_u, col_r, col_g = st.columns([1, 1, 2])
         with col_u: u_sel = st.selectbox("🏢 Unidad de Negocio", ["Noble", "Coffee Station"])
         
-        # Anclaje de Seguridad: El responsable se autoselecciona según el login y se bloquea si es barista
         resp_idx = st.session_state.responsables.index(st.session_state.current_user) if st.session_state.current_user in st.session_state.responsables else 0
         with col_r: r_sel = st.selectbox("👤 Responsable", st.session_state.responsables, index=resp_idx, disabled=(st.session_state.user_role != "admin"))
         
@@ -437,7 +403,6 @@ elif st.session_state.pagina == "Inventario":
                 fh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 for n, info in regs.items():
                     dm = info["row"]
-                    # CAPTURA DE INVENTARIO: La fecha viaja en la Columna O (Índice 14), y la F (Índice 5) va en blanco.
                     filas.append([
                         u_sel, n, dm.get('Marca',''), dm.get('Proveedor',''), dm.get('Grupo',''), "", 
                         dm.get('Presentación de Compra',''), info["u"], info["a"], info["b"], 
@@ -462,7 +427,6 @@ elif st.session_state.pagina == "Ingresos":
         col_u, col_r = st.columns(2)
         with col_u: u_sel = st.selectbox("🏢 Unidad receptora:", ["Noble", "Coffee Station"])
         
-        # Anclaje de Seguridad: El responsable se autoselecciona según el login y se bloquea si es barista
         resp_idx = st.session_state.responsables.index(st.session_state.current_user) if st.session_state.current_user in st.session_state.responsables else 0
         with col_r: r_sel = st.selectbox("👤 Responsable:", st.session_state.responsables, index=resp_idx, disabled=(st.session_state.user_role != "admin"))
 
@@ -523,7 +487,6 @@ elif st.session_state.pagina == "Ingresos":
                             nuevo_n = nuevo_a + v_b_prev
                             necesita = "TRUE" if nuevo_n < v_min else "FALSE"
                             
-                            # ENTRADA DE INSUMO: Columna F fecha, O vacía, P vacía.
                             filas_bulk.append([
                                 u_sel, nom, row_insumo.get('Marca',''), row_insumo.get('Proveedor',''), row_insumo.get('Grupo',''), fh, 
                                 row_insumo.get('Presentación de Compra',''), row_insumo.get('Unidad de Medida','pz'), 
@@ -563,7 +526,7 @@ elif st.session_state.pagina == "Ingresos":
                             m = df_actual[df_actual['Nombre del Insumo'] == nom]
                             if not m.empty:
                                 v_a_prev = m.iloc[0]['Alm']
-                            v_b_prev = m.iloc[0]['Barra']
+                                v_b_prev = m.iloc[0]['Barra']
                         
                         v_n_prev = v_a_prev + v_b_prev
                         v_min = limpiar_valor(row_insumo.get('Stock Mínimo', 0))
@@ -599,7 +562,6 @@ elif st.session_state.pagina == "Ingresos":
                             dm = info["row"]
                             necesita = "TRUE" if info["nuevo_n"] < info["min"] else "FALSE"
                             
-                            # ENTRADA DE INSUMO: F fecha, O vacía, P vacía.
                             filas.append([
                                 u_sel, n, dm.get('Marca',''), dm.get('Proveedor',''), dm.get('Grupo',''), fh, 
                                 dm.get('Presentación de Compra',''), dm.get('Unidad de Medida','pz'), 
@@ -734,7 +696,6 @@ elif st.session_state.pagina == "ReporteStock":
         st.warning("No hay registros en la base de datos para generar el reporte.")
 
 elif st.session_state.pagina == "CorteMes":
-    # Capa de seguridad redundante por si alguien intenta forzar la URL (aunque Streamlit no usa URLs para ruteo interno)
     if st.session_state.user_role != "admin":
         st.error("🚫 Acceso Denegado. Solo los administradores pueden ejecutar el cierre de mes.")
     else:
@@ -744,17 +705,14 @@ elif st.session_state.pagina == "CorteMes":
         if st.button("🚀 Ejecutar Cierre y Optimizar Historial"):
             with st.status("Ejecutando protocolo de cierre...", expanded=True) as status:
                 try:
-                    # 1. Calcular Foto Actual
                     st.write("Calculando estados finales de stock...")
                     df_corte = obtener_ultimo_inventario(df_historial)
                     
                     if df_corte.empty:
                         st.error("No hay datos para cerrar.")
                     else:
-                        # 2. Preparar datos para 'Cierres' y 'Archivo_Historial'
                         fh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         
-                        # Preparar filas para la hoja 'Cierres' (Índices idénticos al Historial)
                         filas_corte = []
                         for _, r in df_corte.iterrows():
                             filas_corte.append([
@@ -764,7 +722,6 @@ elif st.session_state.pagina == "CorteMes":
                                 "SISTEMA-CIERRE", fh, "Corte consolidado"
                             ])
                         
-                        # 3. Mover Historial a Archivo
                         st.write("Archivando historial de movimientos...")
                         ws_hist = sh.worksheet("Historial")
                         datos_hist = ws_hist.get_all_values()
@@ -774,14 +731,12 @@ elif st.session_state.pagina == "CorteMes":
                                 ws_arc = sh.worksheet("Archivo_Historial")
                             except:
                                 ws_arc = sh.add_worksheet(title="Archivo_Historial", rows="1000", cols="20")
-                                ws_arc.append_row(datos_hist[0]) # Encabezados
+                                ws_arc.append_row(datos_hist[0])
                             
                             ws_arc.append_rows(datos_hist[1:])
                         
-                        # 4. Limpiar Historial y Escribir Snapshot en Cierres
                         st.write("Consolidando saldos iniciales...")
                         
-                        # Sobrescribir Cierres con el nuevo Snapshot
                         try:
                             ws_cie = sh.worksheet("Cierres")
                             ws_cie.clear()
@@ -792,7 +747,6 @@ elif st.session_state.pagina == "CorteMes":
                         ws_cie.append_row(encabezados)
                         ws_cie.append_rows(filas_corte)
                         
-                        # Limpiar el historial principal
                         ws_hist.clear()
                         ws_hist.append_row(encabezados)
                         
@@ -803,4 +757,3 @@ elif st.session_state.pagina == "CorteMes":
                         st.rerun()
                 except Exception as e:
                     st.error(f"Falla crítica en el protocolo de cierre: {e}")
-```
