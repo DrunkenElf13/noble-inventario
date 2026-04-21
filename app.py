@@ -30,7 +30,8 @@ def cargar_datos_maestros():
 
 @st.cache_data(ttl=30)
 def cargar_historial():
-    return pd.DataFrame(historial_sheet.get_all_records())
+    data = historial_sheet.get_all_records()
+    return pd.DataFrame(data) if data else pd.DataFrame()
 
 df_raw = cargar_datos_maestros()
 df_historial = cargar_historial()
@@ -97,7 +98,7 @@ with st.sidebar:
 # --- PÁGINA: PORTADA ---
 if st.session_state.pagina == "Portada":
     st.title("📊 Resumen de Compras")
-    if not df_historial.empty:
+    if not df_historial.empty and "Necesita Compra" in df_historial.columns:
         df_historial['Fecha de Inventario'] = pd.to_datetime(df_historial['Fecha de Inventario'])
         ultimo = df_historial.sort_values('Fecha de Inventario').drop_duplicates(['Unidad de Negocio', 'Nombre del Insumo'], keep='last')
         criticos = ultimo[ultimo['Necesita Compra'].astype(str).str.upper() == "TRUE"]
@@ -114,7 +115,7 @@ if st.session_state.pagina == "Portada":
                     st.write(f"**Marca:** {r.get('Marca','')} | **Proveedor:** {r.get('Proveedor','')}")
                     st.caption(f"Registrado por {r['Responsable']} el {r['Fecha de Inventario'].strftime('%d/%m %H:%M')}")
         else: st.success(f"✅ Sin faltantes en {suc}")
-    else: st.info("Inicia el primer inventario para ver datos.")
+    else: st.info("No hay datos en el historial. Inicia un levantamiento.")
     if st.button("🚀 INICIAR INVENTARIO", use_container_width=True, type="primary"): cambiar_pagina("Inventario")
 
 # --- PÁGINA: INVENTARIO ---
@@ -128,17 +129,15 @@ elif st.session_state.pagina == "Inventario":
         grps = sorted(df_u["Grupo"].unique().tolist()) if not df_u.empty else ["A"]
         g_sel = st.selectbox("📂 Grupo", grps)
 
-    # Preparar el historial previo para comparativas
-    if not df_historial.empty:
+    # Lógica segura para obtener el último registro
+    ultimo_registro = pd.DataFrame()
+    if not df_historial.empty and "Unidad de Negocio" in df_historial.columns:
         df_historial['Fecha de Inventario'] = pd.to_datetime(df_historial['Fecha de Inventario'])
         ultimo_registro = df_historial.sort_values('Fecha de Inventario').drop_duplicates(['Unidad de Negocio', 'Nombre del Insumo'], keep='last')
-    else:
-        ultimo_registro = pd.DataFrame()
 
     df_f = df_u[df_u["Grupo"] == g_sel].reset_index(drop=True)
     if not df_f.empty:
         regs = {}
-        # Encabezados ajustados
         h1, h2, h3, h4, h5, h6 = st.columns([2.5, 1, 1, 1, 1, 1])
         with h1: st.write("**Insumo / Referencia**")
         with h2: st.write("**Alm.**")
@@ -151,16 +150,19 @@ elif st.session_state.pagina == "Inventario":
         for i, row in df_f.iterrows():
             nom_ins = row['Nombre del Insumo']
             
-            # Obtener datos previos del historial
-            prev = ultimo_registro[(ultimo_registro['Unidad de Negocio'] == u_sel) & (ultimo_registro['Nombre del Insumo'] == nom_ins)]
-            v_prev = prev.iloc[0]['Stock Neto'] if not prev.empty else 0.0
+            # Obtención segura de datos previos para evitar KeyError
+            v_prev = 0.0
+            if not ultimo_registro.empty:
+                prev_match = ultimo_registro[(ultimo_registro['Unidad de Negocio'] == u_sel) & (ultimo_registro['Nombre del Insumo'] == nom_ins)]
+                if not prev_match.empty:
+                    v_prev = prev_match.iloc[0].get('Stock Neto', 0.0)
+
             v_min = float(row.get('Stock Mínimo', 0) or 0)
             
             c1, c2, c3, c4, c5, c6 = st.columns([2.5, 1, 1, 1, 1, 1])
             with c1: 
                 st.write(f"**{nom_ins}**")
                 st.caption(f"Marca: {row.get('Marca','n/a')} | Prov: {row.get('Proveedor','n/a')}")
-                # DATA DE REFERENCIA SOLICITADA:
                 diff = v_prev - v_min
                 color_diff = "green" if diff > 0 else "red"
                 st.markdown(f"<small>Anterior: <b>{v_prev}</b> | Mín: <b>{v_min}</b> (<span style='color:{color_diff}'>{diff:+.1f}</span>)</small>", unsafe_allow_html=True)
