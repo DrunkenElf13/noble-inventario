@@ -24,7 +24,6 @@ except Exception as e:
 
 # 2. GESTIÓN DE RESPONSABLES (SIDEBAR)
 if "responsables" not in st.session_state:
-    # Lista inicial actualizada (José eliminado)
     st.session_state.responsables = ["Jenny", "Araceli", "Raúl"]
 
 with st.sidebar:
@@ -33,37 +32,44 @@ with st.sidebar:
     if st.button("➕ Agregar al Equipo"):
         if nuevo_nombre and nuevo_nombre not in st.session_state.responsables:
             st.session_state.responsables.append(nuevo_nombre)
-            st.success(f"{nuevo_nombre} agregado.")
+            st.rerun()
         
     eliminar_nombre = st.selectbox("Eliminar del Equipo:", st.session_state.responsables)
     if st.button("🗑️ Eliminar Seleccionado"):
         if len(st.session_state.responsables) > 1:
             st.session_state.responsables.remove(eliminar_nombre)
-            st.warning(f"{eliminar_nombre} eliminado.")
             st.rerun()
-        else:
-            st.error("Debe haber al menos un responsable.")
 
 # 3. CARGA DE DATOS
-df_maestro = pd.DataFrame(insumos_sheet.get_all_records())
+df_raw = pd.DataFrame(insumos_sheet.get_all_records())
 
-st.title("☕ Noble: Control de Inventario")
+st.title("☕ Noble & Coffee Station: Inventario")
 
-# 4. SELECCIÓN DE CONTEXTO
-col_a, col_b = st.columns(2)
-with col_a:
-    responsable = st.selectbox("Responsable", st.session_state.responsables)
-with col_b:
-    grupos_disponibles = sorted(df_maestro["Grupo"].unique().tolist())
-    grupo_sel = st.selectbox("Selecciona Grupo para Inventariar", grupos_disponibles)
+# 4. FILTROS PRINCIPALES
+col_u, col_r, col_g = st.columns(3)
+
+with col_u:
+    # Filtro por Unidad de Negocio (Columna A)
+    unidades_negocio = sorted(df_raw["Unidad de Negocio"].unique().tolist())
+    unidad_sel = st.selectbox("🏢 Unidad de Negocio", unidades_negocio)
+
+with col_r:
+    responsable = st.selectbox("👤 Responsable", st.session_state.responsables)
+
+# Filtrar primero por Unidad de Negocio para obtener los grupos correctos
+df_unidad = df_raw[df_raw["Unidad de Negocio"] == unidad_sel]
+
+with col_g:
+    grupos_disponibles = sorted(df_unidad["Grupo"].unique().tolist())
+    grupo_sel = st.selectbox("📂 Grupo", grupos_disponibles)
 
 st.divider()
 
-# 5. DESPLIEGUE POR GRUPO
-df_filtrado = df_maestro[df_maestro["Grupo"] == grupo_sel].reset_index(drop=True)
+# 5. DESPLIEGUE FILTRADO
+df_final = df_unidad[df_unidad["Grupo"] == grupo_sel].reset_index(drop=True)
 
-if not df_filtrado.empty:
-    st.subheader(f"Inventario Detallado: Grupo {grupo_sel}")
+if not df_final.empty:
+    st.subheader(f"Inventario: {unidad_sel} - Grupo {grupo_sel}")
     
     nuevos_registros = {}
 
@@ -76,7 +82,7 @@ if not df_filtrado.empty:
     with h5: st.write("**Neto Total**")
     st.divider()
 
-    for index, row in df_filtrado.iterrows():
+    for index, row in df_final.iterrows():
         nombre = row["Nombre del Insumo"]
         c1, c2, c3, c4, c5 = st.columns([3, 1.5, 1.5, 1.5, 1.5])
         
@@ -89,24 +95,21 @@ if not df_filtrado.empty:
             activo = st.number_input("Abierto", min_value=0.0, step=0.1, key=f"act_{index}")
         with c4:
             unidades = ["pz", "ml", "gr", "%", "kg", "lt"]
-            unidad_excel = str(row.get("Unidad de Medida", "pz")).lower()
-            idx_unidad = unidades.index(unidad_excel) if unidad_excel in unidades else 0
-            unidad_sel = st.selectbox("Medida", unidades, index=idx_unidad, key=f"uni_{index}")
+            u_excel = str(row.get("Unidad de Medida", "pz")).lower()
+            idx_u = unidades.index(u_excel) if u_excel in unidades else 0
+            unidad_sel_item = st.selectbox("Medida", unidades, index=idx_u, key=f"uni_{index}")
         with c5:
             neto = almacen + activo
             st.metric("Total", f"{neto:.1f}")
             
         nuevos_registros[nombre] = {
-            "almacen": almacen,
-            "activo": activo,
-            "neto": neto,
-            "unidad": unidad_sel,
-            "datos_maestros": row
+            "almacen": almacen, "activo": activo, "neto": neto,
+            "unidad": unidad_sel_item, "datos_maestros": row
         }
         st.write("---")
 
     # 6. BOTÓN DE REGISTRO
-    if st.button(f"📥 Guardar Todo el Grupo {grupo_sel}", use_container_width=True):
+    if st.button(f"📥 Registrar Todo en {unidad_sel}", use_container_width=True):
         fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         filas_para_excel = []
 
@@ -114,33 +117,32 @@ if not df_filtrado.empty:
             dm = info["datos_maestros"]
             try:
                 stock_min = float(dm.get("Stock Mínimo", 0)) if dm.get("Stock Mínimo") != "" else 0.0
-            except:
-                stock_min = 0.0
+            except: stock_min = 0.0
             
             necesita_compra = "TRUE" if info["neto"] <= stock_min else "FALSE"
 
             fila = [
-                str(dm.get("Unidad de Negocio", "Noble")), 
-                nombre,                                     
-                str(dm.get("Marca", "")),                  
-                str(dm.get("Proveedor", "")),              
-                str(dm.get("Grupo", "")),                  
-                str(dm.get("Fecha de Entrada", "")),       
-                str(dm.get("Presentación de Compra", "")), 
-                info["unidad"],                            
-                info["almacen"],                           
-                info["activo"],                            
-                info["neto"],                              
-                stock_min,                                 
-                necesita_compra,                           
-                responsable,                               
-                fecha_hoy                                  
+                unidad_sel,                                 # A (Unidad de Negocio)
+                nombre,                                     # B
+                str(dm.get("Marca", "")),                  # C
+                str(dm.get("Proveedor", "")),              # D
+                str(dm.get("Grupo", "")),                  # E
+                str(dm.get("Fecha de Entrada", "")),       # F
+                str(dm.get("Presentación de Compra", "")), # G
+                info["unidad"],                            # H
+                info["almacen"],                           # I
+                info["activo"],                            # J
+                info["neto"],                              # K
+                stock_min,                                 # L
+                necesita_compra,                           # M
+                responsable,                               # N
+                fecha_hoy                                  # O
             ]
             filas_para_excel.append(fila)
 
         if filas_para_excel:
             historial_sheet.append_rows(filas_para_excel)
-            st.success(f"✅ Registrado por {responsable}.")
+            st.success(f"✅ Inventario de {unidad_sel} guardado exitosamente.")
             st.balloons()
 else:
-    st.warning("Selecciona un grupo para ver los insumos.")
+    st.warning(f"No hay insumos configurados para {unidad_sel} en este grupo.")
