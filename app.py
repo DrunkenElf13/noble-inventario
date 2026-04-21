@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 from google.oauth2.service_account import Credentials
 import gspread
@@ -23,25 +24,6 @@ sh = conectar_google_sheets()
 
 # --- 2. FUNCIONES DE LIMPIEZA Y CARGA DE DATOS ---
 def limpiar_valor(valor):
-    def construir_inventario_actual(df_historial, unidad):
-    if df_historial.empty:
-        return pd.DataFrame()
-    
-    df = df_historial[df_historial['Unidad de Negocio'] == unidad].copy()
-    df = df.sort_values('Fecha de Inventario')
-    
-    ult = df.drop_duplicates('Nombre del Insumo', keep='last')
-    
-    # Limpieza segura
-    ult['Alm'] = ult['Alm'].apply(limpiar_valor)
-    ult['Barra'] = ult['Barra'].apply(limpiar_valor)
-    ult['Stock Neto'] = ult['Stock Neto'].apply(limpiar_valor)
-    ult['Stock Mínimo'] = ult['Stock Mínimo'].apply(limpiar_valor)
-    
-    # Cálculo real
-    ult['Stock Neto Calculado'] = ult['Alm'] + ult['Barra']
-    
-    return ult.sort_values(['Grupo', 'Nombre del Insumo'])
     """Limpia valores nulos o con símbolos (ej. 1050%) para evitar errores matemáticos."""
     if pd.isna(valor) or valor is None or valor == "": 
         return 0.0
@@ -65,6 +47,33 @@ def cargar_datos_integrales():
     except Exception as e:
         st.warning(f"Aviso al cargar datos: {e}")
         return pd.DataFrame(), pd.DataFrame()
+
+# --- NUEVA FUNCIÓN DE CONSOLIDACIÓN ---
+def construir_inventario_actual(df_historial, unidad):
+    if df_historial.empty:
+        return pd.DataFrame()
+    
+    # Filtrar por unidad
+    df_u = df_historial[df_historial['Unidad de Negocio'] == unidad].copy()
+    if df_u.empty:
+        return pd.DataFrame()
+        
+    # Ordenar por fecha y tomar el último por insumo
+    df_u = df_u.sort_values('Fecha de Inventario', ascending=True)
+    df_actual = df_u.drop_duplicates('Nombre del Insumo', keep='last').copy()
+    
+    # Limpiar campos numéricos
+    df_actual['Alm'] = df_actual['Alm'].apply(limpiar_valor)
+    df_actual['Barra'] = df_actual['Barra'].apply(limpiar_valor)
+    df_actual['Stock Mínimo'] = df_actual['Stock Mínimo'].apply(limpiar_valor)
+    
+    # Calcular Stock Neto Nuevo (Almacén + Activo/Barra)
+    df_actual['Stock Neto Calculado'] = df_actual['Alm'] + df_actual['Barra']
+    
+    # Ordenar por Grupo e Insumo
+    df_actual = df_actual.sort_values(['Grupo', 'Nombre del Insumo'])
+    
+    return df_actual
 
 df_raw, df_historial = cargar_datos_integrales()
 
@@ -268,7 +277,7 @@ elif st.session_state.pagina == "Inventario":
             st.success("¡Inventario procesado con éxito!")
             st.balloons()
 
-# --- 7. PÁGINA: INGRESOS DE COMPRAS (NUEVA) ---
+# --- 7. PÁGINA: INGRESOS DE COMPRAS ---
 elif st.session_state.pagina == "Ingresos":
     st.title("📥 Registro de Compras (Entradas)")
     st.info("Selecciona solo los insumos que llegaron. Las cantidades se sumarán automáticamente a tu stock de Almacén.")
@@ -353,6 +362,73 @@ elif st.session_state.pagina == "Ingresos":
                 st.success("¡Compras registradas exitosamente en el Almacén!")
                 st.balloons()
 
+# --- NUEVA PÁGINA: CONSULTA DE INVENTARIO ---
+elif st.session_state.pagina == "Consulta":
+    st.title("📦 Inventario Consolidado")
+    
+    u_sel = st.selectbox("🏢 Ver inventario de:", ["Noble", "Coffee Station"])
+    
+    if not df_historial.empty:
+        df_actual = construir_inventario_actual(df_historial, u_sel)
+        
+        if not df_actual.empty:
+            # Indicadores Clave
+            bajo_min = df_actual[df_actual['Stock Neto Calculado'] < df_actual['Stock Mínimo']]
+            
+            m1, m2, m3 = st.columns(3)
+            with m1: st.metric("Total Insumos", len(df_actual))
+            with m2: st.metric("Bajo Mínimo", len(bajo_min), delta=-len(bajo_min), delta_color="inverse")
+            with m3: st.metric("Stock Global (unidades/medidas)", f"{df_actual['Stock Neto Calculado'].sum():,.1f}")
+            
+            st.divider()
+            
+            # Buscador y Filtro por Proveedor
+            col_search, col_prov = st.columns([2, 1])
+            with col_search:
+                busqueda = st.text_input("🔍 Buscar insumo por nombre:")
+            with col_prov:
+                provs = ["Todos"] + sorted(df_actual['Proveedor'].unique().tolist())
+                prov_sel = st.selectbox("🚛 Filtrar por Proveedor:", provs)
+            
+            # Aplicar filtros
+            df_display = df_actual.copy()
+            if busqueda:
+                df_display = df_display[df_display['Nombre del Insumo'].str.contains(busqueda, case=False)]
+            if prov_sel != "Todos":
+                df_display = df_display[df_display['Proveedor'] == prov_sel]
+            
+            # Mostrar tabla consolidada
+            st.subheader(f"Listado de Inventario - {u_sel}")
+            
+            # Renombrar columnas para claridad en la vista
+            df_final = df_display[['Grupo', 'Nombre del Insumo', 'Marca', 'Proveedor', 'Alm', 'Barra', 'Stock Neto Calculado', 'Unidad de Medida', 'Stock Mínimo', 'Fecha de Inventario']].copy()
+            df_final.columns = ['Grupo', 'Insumo', 'Marca', 'Proveedor', 'Almacén', 'Activo (Barra)', 'Stock Neto Total', 'Medida', 'Mínimo', 'Último Registro']
+            
+            # Aplicar estilos visuales
+            def highlight_low_stock(s):
+                return ['background-color: #ffcccc' if (s['Stock Neto Total'] < s['Mínimo']) else '' for _ in s]
+
+            st.dataframe(
+                df_final.style.apply(highlight_low_stock, axis=1),
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Generador de Lista de Compra por Proveedor
+            if prov_sel != "Todos":
+                st.divider()
+                st.subheader(f"🛒 Lista de Compra sugerida: {prov_sel}")
+                compras_prov = df_display[(df_display['Proveedor'] == prov_sel) & (df_display['Stock Neto Calculado'] < df_display['Stock Mínimo'])]
+                if not compras_prov.empty:
+                    for _, cp in compras_prov.iterrows():
+                        st.warning(f"• **{cp['Nombre del Insumo']}** | Falta: {cp['Stock Mínimo'] - cp['Stock Neto Calculado']:.1f} {cp['Unidad de Medida']}")
+                else:
+                    st.success("No hay insumos bajo el mínimo para este proveedor.")
+        else:
+            st.warning(f"No hay registros históricos para la unidad {u_sel}.")
+    else:
+        st.info("No hay datos históricos disponibles para consolidar.")
+
 # --- 8. PÁGINAS DE TICKETS TÉRMICOS (58MM) ---
 elif st.session_state.pagina == "Impresion":
     st.title("🖨️ Ticket de Conteo (Formato 58mm)")
@@ -391,47 +467,4 @@ elif st.session_state.pagina == "ListaCompra":
             st.text_area("Copia este texto para llevarlo de compras:", value=t, height=450)
         else: 
             st.success("¡Todo está en orden! No hay pedidos pendientes marcados en el último inventario.")
-            
-# --- 9. INVENTARIO COMPLETO CONSOLIDADO ---
-elif st.session_state.pagina == "Consulta":
-    st.title("📦 Inventario Completo (Sistema Real)")
-
-    u_sel = st.radio("Sucursal:", ["Noble", "Coffee Station"], horizontal=True)
-
-    df_inv = construir_inventario_actual(df_historial, u_sel)
-
-    if not df_inv.empty:
-        st.success("Vista consolidada del inventario actual (no captura).")
-
-        # Indicadores
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Insumos Totales", len(df_inv))
-        with col2:
-            bajo = df_inv[df_inv['Stock Neto Calculado'] < df_inv['Stock Mínimo']]
-            st.metric("Bajo Mínimo", len(bajo))
-        with col3:
-            st.metric("Stock Total", round(df_inv['Stock Neto Calculado'].sum(), 1))
-
-        st.divider()
-
-        # Tabla completa
-        st.dataframe(
-            df_inv[['Nombre del Insumo','Grupo','Alm','Barra','Stock Neto Calculado','Stock Mínimo','Necesita Compra','Fecha de Inventario']],
-            use_container_width=True
-        )
-
-        # ALERTAS REALES
-        st.divider()
-        st.subheader("⚠️ Alertas de Stock")
-
-        alertas = df_inv[df_inv['Stock Neto Calculado'] < df_inv['Stock Mínimo']]
-
-        if not alertas.empty:
-            for _, r in alertas.iterrows():
-                st.error(f"{r['Nombre del Insumo']} → {r['Stock Neto Calculado']} / Min {r['Stock Mínimo']}")
-        else:
-            st.success("Todo el inventario está sano.")
-
-    else:
-        st.warning("No hay información suficiente.")
+```
