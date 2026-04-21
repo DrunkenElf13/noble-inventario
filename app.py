@@ -23,7 +23,7 @@ except Exception as e:
     st.error("Error de conexión. Revisa los Secrets.")
     st.stop()
 
-# 2. CARGA DE DATOS
+# 2. CARGA DE DATOS (BLINDADA)
 @st.cache_data(ttl=30)
 def cargar_datos_maestros():
     data = insumos_sheet.get_all_records()
@@ -48,7 +48,7 @@ def cambiar_pagina(nombre):
     st.session_state.pagina = nombre
     st.rerun()
 
-# --- SIDEBAR (CON GESTIÓN COMPLETA) ---
+# --- SIDEBAR: GESTIÓN DE EQUIPO E INSUMOS ---
 with st.sidebar:
     st.title("⚙️ Operaciones")
     if st.button("🏠 Portada / Compras", use_container_width=True): cambiar_pagina("Portada")
@@ -64,9 +64,9 @@ with st.sidebar:
             if n_nom: st.session_state.responsables.append(n_nom); st.rerun()
 
     st.divider()
-    op_insumo = st.radio("Insumos:", ["Añadir", "Editar"])
+    op_insumo = st.radio("Catálogo:", ["Añadir Insumo", "Editar Insumo"])
 
-    if op_insumo == "Añadir":
+    if op_insumo == "Añadir Insumo":
         with st.form("f_add"):
             u = st.selectbox("Unidad", ["Noble", "Coffee Station"])
             n = st.text_input("Nombre")
@@ -103,7 +103,7 @@ with st.sidebar:
 
 # --- PÁGINA: PORTADA ---
 if st.session_state.pagina == "Portada":
-    st.title("📊 Prioridades de Compra")
+    st.title("📊 Resumen de Compras")
     if not df_historial.empty and "Necesita Compra" in df_historial.columns:
         try:
             df_historial['Fecha de Inventario'] = pd.to_datetime(df_historial['Fecha de Inventario'])
@@ -122,20 +122,21 @@ if st.session_state.pagina == "Portada":
                         st.write(f"**Marca:** {r.get('Marca','')} | **Proveedor:** {r.get('Proveedor','')}")
                         st.caption(f"Registrado por {r.get('Responsable','-')} el {r['Fecha de Inventario'].strftime('%d/%m %H:%M')}")
             else: st.success(f"✅ Sin faltantes en {suc}")
-        except: st.info("Procesando datos...")
+        except: st.info("Cargando datos...")
     else: st.info("Inicia un inventario para ver prioridades.")
     if st.button("🚀 INICIAR INVENTARIO", use_container_width=True, type="primary"): cambiar_pagina("Inventario")
 
-# --- PÁGINA: INVENTARIO ---
+# --- PÁGINA: INVENTARIO (CON MULTIGRUPO) ---
 elif st.session_state.pagina == "Inventario":
     st.title("📝 Levantamiento de Stock")
-    c_u, c_r, c_g = st.columns(3)
+    c_u, c_r, c_g = st.columns([1, 1, 2]) # Más espacio para multiselección
     with c_u: u_sel = st.selectbox("🏢 Unidad", ["Noble", "Coffee Station"])
     with c_r: r_sel = st.selectbox("👤 Responsable", st.session_state.responsables)
     with c_g:
         df_u = df_raw[df_raw["Unidad de Negocio"] == u_sel] if not df_raw.empty else pd.DataFrame()
-        grps = sorted(df_u["Grupo"].unique().tolist()) if not df_u.empty else ["A"]
-        g_sel = st.selectbox("📂 Grupo", grps)
+        grps_disponibles = sorted(df_u["Grupo"].unique().tolist()) if not df_u.empty else ["A"]
+        # ACTUALIZACIÓN: Multiselección de grupos
+        g_sel = st.multiselect("📂 Seleccionar Grupos", grps_disponibles, default=grps_disponibles[:1])
 
     ultimo_registro = pd.DataFrame()
     if not df_historial.empty and "Nombre del Insumo" in df_historial.columns:
@@ -144,18 +145,22 @@ elif st.session_state.pagina == "Inventario":
             ultimo_registro = df_historial.sort_values('Fecha de Inventario').drop_duplicates(['Unidad de Negocio', 'Nombre del Insumo'], keep='last')
         except: pass
 
-    df_f = df_u[df_u["Grupo"] == g_sel].reset_index(drop=True) if not df_u.empty else pd.DataFrame()
+    # Filtrar por los grupos seleccionados
+    df_f = df_u[df_u["Grupo"].isin(g_sel)].reset_index(drop=True) if not df_u.empty else pd.DataFrame()
     
     if not df_f.empty:
         regs = {}
         h1, h2, h3, h4, h5, h6 = st.columns([2.5, 1, 1, 1, 1, 1])
-        with h1: st.write("**Insumo / Guía**")
+        with h1: st.write("**Insumo / Referencia**")
         with h2: st.write("**Alm.**")
         with h3: st.write("**Barra**")
         with h4: st.write("**Medida**")
         with h5: st.write("**Neto**")
         with h6: st.write("**¿Pedir?**")
         st.divider()
+
+        # Ordenar por grupo para claridad visual
+        df_f = df_f.sort_values("Grupo")
 
         for i, row in df_f.iterrows():
             nom = row['Nombre del Insumo']
@@ -171,7 +176,6 @@ elif st.session_state.pagina == "Inventario":
                 c1, c2, c3, c4, c5, c6 = st.columns([2.5, 1, 1, 1, 1, 1])
                 with c1: 
                     st.write(f"**{nom}**")
-                    # ACTUALIZACIÓN: Palabras completas Marca y Proveedor
                     st.caption(f"Marca: {row.get('Marca','-')} | Proveedor: {row.get('Proveedor','-')}")
                     diff = v_prev - v_min
                     color = "green" if diff > 0 else "red"
