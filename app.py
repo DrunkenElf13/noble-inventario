@@ -151,7 +151,12 @@ def obtener_ultimo_inventario(df_hist, unidad=None):
         df_actual[col] = df_actual[col].apply(limpiar_valor)
         
     df_actual['Stock Neto Calculado'] = df_actual['Alm'] + df_actual['Barra']
-    df_actual['Necesita Compra'] = df_actual['Stock Neto Calculado'] < df_actual['Stock Mínimo']
+    
+    # Privilegiar criterio humano: Lee la decisión explícita de compra si existe, si no, usa matemática
+    if 'Necesita Compra' in df_actual.columns:
+        df_actual['Necesita Compra'] = df_actual['Necesita Compra'].astype(str).str.strip().str.upper() == 'TRUE'
+    else:
+        df_actual['Necesita Compra'] = df_actual['Stock Neto Calculado'] < df_actual['Stock Mínimo']
     
     return df_actual
 
@@ -400,8 +405,15 @@ elif st.session_state.pagina == "Inventario":
             grps = sorted(df_u["Grupo"].dropna().unique().tolist()) if not df_u.empty and "Grupo" in df_u.columns else ["A"]
             g_sel = st.multiselect("📂 Grupos a contar", grps, default=grps[:1] if grps else [])
 
+        st.divider()
+        # NUEVO: BARRA DE BÚSQUEDA
+        busqueda_inv = st.text_input("🔍 Buscar insumo específico para contar:", placeholder="Escribe el nombre del insumo...")
+
         df_actual = obtener_ultimo_inventario(df_historial, u_sel)
         df_f = df_u[df_u["Grupo"].isin(g_sel)].sort_values(["Grupo", "Nombre del Insumo"]).reset_index(drop=True)
+        
+        if busqueda_inv:
+            df_f = df_f[df_f["Nombre del Insumo"].astype(str).str.contains(busqueda_inv, case=False, na=False)]
         
         if not df_f.empty:
             regs = {}
@@ -415,8 +427,10 @@ elif st.session_state.pagina == "Inventario":
             with h7: st.write("**Comentarios**")
             st.divider()
 
-            for i, row in df_f.iterrows():
+            for _, row in df_f.iterrows():
                 nom = str(row.get('Nombre del Insumo', ''))
+                # Llavero seguro para que la búsqueda en vivo no mezcle variables de estado
+                safe_nom = nom.replace(" ", "_").replace('"', '') 
                 v_prev = 0.0
                 
                 if not df_actual.empty:
@@ -435,23 +449,44 @@ elif st.session_state.pagina == "Inventario":
                         color = "green" if diff >= 0 else "red"
                         st.markdown(f"<small>Anterior: {v_prev} | Mín: {v_min} (<span style='color:{color}'>{diff:+.1f}</span>)</small>", unsafe_allow_html=True)
                     
-                    with c2: v_a = st.number_input("Alm", min_value=0.0, step=1.0, key=f"a_{i}", label_visibility="collapsed")
-                    with c3: v_b = st.number_input("Bar", min_value=0.0, step=1.0, key=f"b_{i}", label_visibility="collapsed")
+                    with c2: v_a = st.number_input("Alm", min_value=0.0, step=1.0, key=f"a_{safe_nom}", label_visibility="collapsed")
+                    with c3: v_b = st.number_input("Bar", min_value=0.0, step=1.0, key=f"b_{safe_nom}", label_visibility="collapsed")
                     
                     with c4:
                         u_list = ["pz", "ml", "gr", "kg", "lt"]
                         u_act = str(row.get("Unidad de Medida","pz")).lower()
-                        v_u = st.selectbox("U", u_list, index=u_list.index(u_act) if u_act in u_list else 0, key=f"u_{i}", label_visibility="collapsed")
+                        v_u = st.selectbox("U", u_list, index=u_list.index(u_act) if u_act in u_list else 0, key=f"u_{safe_nom}", label_visibility="collapsed")
                     
                     with c5:
                         v_n = v_a + v_b
                         st.write(f"**{v_n:.1f}**")
                     
                     with c6: 
-                        v_p = st.toggle("🛒", value=False, key=f"p_{i}") 
+                        p_key = f"p_{safe_nom}"
+                        manual_key = f"m_{safe_nom}"
+                        last_math_key = f"lm_{safe_nom}"
+                        
+                        # Manejo quirúrgico del estado del botón ¿Pedir?
+                        if manual_key not in st.session_state: st.session_state[manual_key] = None
+                        if last_math_key not in st.session_state: st.session_state[last_math_key] = None
+                        
+                        math_val = bool(v_n < v_min)
+                        
+                        if st.session_state[last_math_key] != math_val:
+                            st.session_state[manual_key] = None
+                            st.session_state[last_math_key] = math_val
+                            
+                        def make_toggle_cb(k, mk):
+                            def cb(): st.session_state[mk] = st.session_state[k]
+                            return cb
+                            
+                        if st.session_state[manual_key] is None:
+                            st.session_state[p_key] = math_val
+                            
+                        v_p = st.toggle("🛒", key=p_key, on_change=make_toggle_cb(p_key, manual_key)) 
                     
                     with c7:
-                        v_c = st.text_input("Nota...", key=f"c_{i}", label_visibility="collapsed", placeholder="Opcional")
+                        v_c = st.text_input("Nota...", key=f"c_{safe_nom}", label_visibility="collapsed", placeholder="Opcional")
                     
                     regs[nom] = {"a": v_a, "b": v_b, "n": v_n, "u": v_u, "p": v_p, "c": v_c, "row": row}
                 st.divider()
@@ -644,7 +679,7 @@ elif st.session_state.pagina == "Consulta":
         
         m1, m2, m3 = st.columns(3)
         with m1: st.metric("Total Referencias", len(df_actual))
-        with m2: st.metric("Alertas Bajo Mínimo", len(bajo_min), delta=-len(bajo_min), delta_color="inverse")
+        with m2: st.metric("Alertas de Compra (Faltantes)", len(bajo_min), delta=-len(bajo_min), delta_color="inverse")
         with m3: st.metric("Volumen Global", f"{df_actual['Stock Neto Calculado'].sum():,.1f}")
         
         st.divider()
