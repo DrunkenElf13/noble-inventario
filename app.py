@@ -37,14 +37,26 @@ def limpiar_valor(valor):
         return 0.0
 
 def normalizar_dataframe(df, columnas_esperadas):
-    """Garantiza que el DF tenga todas las columnas esperadas y limpia nombres."""
+    """
+    WRAPPER MEJORADO: Garantiza que el DF tenga las columnas mapeadas por POSICIÓN exacta.
+    Ignora por completo cómo se llaman los encabezados en Google Sheets para evitar el bug de '0.0'.
+    """
     if df.empty:
         return pd.DataFrame(columns=columnas_esperadas)
     
-    # 1. Limpiar nombres de columnas (elimina espacios ocultos al inicio o final)
-    df.columns = df.columns.str.strip()
+    # 1. Mapeo posicional estricto: forzamos el nombre de la columna según su índice real
+    columnas_actuales = list(df.columns)
+    nuevos_nombres = []
     
-    # 2. Inyectar columnas faltantes para evitar KeyErrors silenciosos
+    for i in range(len(columnas_actuales)):
+        if i < len(columnas_esperadas):
+            nuevos_nombres.append(columnas_esperadas[i])
+        else:
+            nuevos_nombres.append(columnas_actuales[i]) # Mantiene data extra sin romper
+            
+    df.columns = nuevos_nombres
+    
+    # 2. Inyectar columnas faltantes para evitar KeyErrors silenciosos al final de la matriz
     for col in columnas_esperadas:
         if col not in df.columns:
             df[col] = None 
@@ -53,19 +65,30 @@ def normalizar_dataframe(df, columnas_esperadas):
 
 @st.cache_data(ttl=15)
 def cargar_datos_integrales():
-    """Descarga, limpia y estandariza los datos de la base."""
+    """Descarga, limpia y estandariza los datos de la base leyendo la matriz cruda."""
     if not sh: return pd.DataFrame(), pd.DataFrame()
     
     try:
-        raw_insumos = sh.worksheet("Insumos").get_all_records()
-        raw_historial = sh.worksheet("Historial").get_all_records()
+        # EXTRACCIÓN SEGURA: get_all_values() trae matriz pura, ignorando fallos de encabezados en Sheets
+        val_ins = sh.worksheet("Insumos").get_all_values()
+        val_his = sh.worksheet("Historial").get_all_values()
         
-        df_ins = pd.DataFrame(raw_insumos)
-        df_his = pd.DataFrame(raw_historial)
+        if len(val_ins) > 1:
+            df_ins = pd.DataFrame(val_ins[1:], columns=val_ins[0])
+        else:
+            df_ins = pd.DataFrame(columns=val_ins[0] if val_ins else [])
+            
+        if len(val_his) > 1:
+            df_his = pd.DataFrame(val_his[1:], columns=val_his[0])
+        else:
+            df_his = pd.DataFrame(columns=val_his[0] if val_his else [])
+            
+        # ANCLA DE SEGURIDAD: Guardamos la fila real de Google Sheets antes de limpiar el DF
+        df_ins['Sheet_Row_Num'] = df_ins.index + 2
         
-        # Columnas críticas de estructura
-        cols_insumos = ['Unidad de Negocio', 'Nombre del Insumo', 'Marca', 'Proveedor', 'Grupo', 'Presentación de Compra', 'Unidad de Medida', 'Stock Mínimo']
-        cols_historial = ['Unidad de Negocio', 'Nombre del Insumo', 'Alm', 'Barra', 'Stock Neto', 'Stock Mínimo', 'Necesita Compra', 'Responsable', 'Fecha de Inventario']
+        # PLANTILLAS ESTRICTAS DE POSICIÓN (Basado en el orden exacto del append de la app)
+        cols_insumos = ['Unidad de Negocio', 'Nombre del Insumo', 'Marca', 'Proveedor', 'Grupo', 'Espacio_1', 'Presentación de Compra', 'Unidad de Medida', 'Espacio_2', 'Espacio_3', 'Espacio_4', 'Stock Mínimo']
+        cols_historial = ['Unidad de Negocio', 'Nombre del Insumo', 'Marca_H', 'Proveedor_H', 'Grupo_H', 'Espacio_H', 'Pres_Compra_H', 'Unidad_Medida_H', 'Alm', 'Barra', 'Stock Neto', 'Stock Mínimo', 'Necesita Compra', 'Responsable', 'Fecha de Inventario']
         
         df_ins = normalizar_dataframe(df_ins, cols_insumos)
         df_his = normalizar_dataframe(df_his, cols_historial)
@@ -95,7 +118,7 @@ def obtener_ultimo_inventario(df_hist, unidad=None):
     if df_u.empty: return pd.DataFrame()
     
     # Ordenar cronológicamente y mantener solo el registro más reciente por Insumo y Unidad
-    df_actual = df_u.sort_values('Fecha de Inventario', ascending=True).drop_duplicates(subset=['Unidad de Negocio', 'Nombre del Insumo'], keep='last').copy()
+    df_actual = df_u.sort_values('Fecha de Inventario', ascending=True, na_position='first').drop_duplicates(subset=['Unidad de Negocio', 'Nombre del Insumo'], keep='last').copy()
     
     # Estandarización matemática estricta
     for col in ['Alm', 'Barra', 'Stock Neto', 'Stock Mínimo']:
@@ -160,7 +183,7 @@ with st.sidebar:
                     sh.worksheet("Insumos").append_row(nueva_fila)
                     st.cache_data.clear()
                     st.success(f"Insumo '{n}' integrado al sistema.")
-                    time.sleep(1) # Breve pausa para ux
+                    time.sleep(1) 
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error al conectar con la base maestra: {e}")
@@ -190,7 +213,8 @@ with st.sidebar:
                 
                 if st.form_submit_button("💾 Actualizar Insumo"):
                     try:
-                        idx = df_raw[df_raw["Nombre del Insumo"] == ins_edit].index[0] + 2
+                        # Uso de ancla segura de índice para evitar fallos si se han filtrado valores vacíos
+                        idx = int(d.get('Sheet_Row_Num', df_raw[df_raw["Nombre del Insumo"] == ins_edit].index[0] + 2))
                         fila_act = [[e_u, e_n, e_m, e_p, e_g, "", e_uc, e_um, "", "", "", e_sm]]
                         sh.worksheet("Insumos").update(range_name=f'A{idx}:L{idx}', values=fila_act)
                         st.cache_data.clear()
