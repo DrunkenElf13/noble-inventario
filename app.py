@@ -23,6 +23,25 @@ sh = conectar_google_sheets()
 
 # --- 2. FUNCIONES DE LIMPIEZA Y CARGA DE DATOS ---
 def limpiar_valor(valor):
+    def construir_inventario_actual(df_historial, unidad):
+    if df_historial.empty:
+        return pd.DataFrame()
+    
+    df = df_historial[df_historial['Unidad de Negocio'] == unidad].copy()
+    df = df.sort_values('Fecha de Inventario')
+    
+    ult = df.drop_duplicates('Nombre del Insumo', keep='last')
+    
+    # Limpieza segura
+    ult['Alm'] = ult['Alm'].apply(limpiar_valor)
+    ult['Barra'] = ult['Barra'].apply(limpiar_valor)
+    ult['Stock Neto'] = ult['Stock Neto'].apply(limpiar_valor)
+    ult['Stock Mínimo'] = ult['Stock Mínimo'].apply(limpiar_valor)
+    
+    # Cálculo real
+    ult['Stock Neto Calculado'] = ult['Alm'] + ult['Barra']
+    
+    return ult.sort_values(['Grupo', 'Nombre del Insumo'])
     """Limpia valores nulos o con símbolos (ej. 1050%) para evitar errores matemáticos."""
     if pd.isna(valor) or valor is None or valor == "": 
         return 0.0
