@@ -178,7 +178,7 @@ with st.sidebar:
         st.subheader("🔒 Identificación")
         st.write("Inicia sesión para editar datos.")
         with st.form("login_form"):
-            pin_input = st.text_input("Ingresa tu Clave:", type="password") # Límite removido
+            pin_input = st.text_input("Ingresa tu Clave:", type="password")
             submitted = st.form_submit_button("Desbloquear Sistema", type="primary", use_container_width=True)
             
             if submitted:
@@ -214,13 +214,13 @@ with st.sidebar:
     if st.button("🛒 2. Lista de Compra", use_container_width=True): cambiar_pagina("ListaCompra")
     if st.button("📦 3. Reporte de Stock", use_container_width=True): cambiar_pagina("ReporteStock")
     
+    # --- ZONA DE ADMINISTRADOR ---
     if st.session_state.user_role == "admin":
         st.divider()
-        st.write("**🛠️ Administración:**")
+        st.write("**🛠️ Administración Avanzada:**")
         if st.button("🔒 Corte de Mes", use_container_width=True): cambiar_pagina("CorteMes")
         
         st.divider()
-        # NUEVO MÓDULO DE GESTIÓN DE USUARIOS
         with st.expander("👤 Gestión de Accesos"):
             st.write("**Agregar / Actualizar Barista**")
             n_nombre = st.text_input("Nombre de Usuario:")
@@ -231,7 +231,6 @@ with st.sidebar:
                 if n_nombre and n_clave:
                     try:
                         nuevo_df = DF_USUARIOS.copy()
-                        # Si el nombre ya existe, lo filtramos para sobreescribirlo
                         nuevo_df = nuevo_df[nuevo_df["Nombre"] != n_nombre] 
                         nueva_fila = pd.DataFrame([{"Clave": str(n_clave), "Nombre": n_nombre, "Rol": n_rol}])
                         nuevo_df = pd.concat([nuevo_df, nueva_fila], ignore_index=True)
@@ -266,6 +265,8 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"Error: {e}")
 
+    # --- ZONA DE CATÁLOGO (Disponible para todos los usuarios con sesión iniciada) ---
+    if st.session_state.auth_status:
         st.divider()
         st.subheader("🛠️ Gestión del Catálogo")
         op_cat = st.radio("Acción:", ["Añadir Insumo", "Editar Insumo"])
