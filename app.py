@@ -94,7 +94,7 @@ def cargar_datos_integrales():
         df_his = normalizar_dataframe(df_his, cols_historial)
         
         # Parseo seguro de fechas para ordenamiento cronológico. 
-        # Espacio_H (F) = Inventario, Fecha de Inventario (O) = Ingresos
+        # Espacio_H (F) = Ingresos, Fecha de Inventario (O) = Inventarios
         if not df_his.empty:
             df_his['Fecha de Inventario'] = pd.to_datetime(df_his['Fecha de Inventario'], errors='coerce')
             df_his['Espacio_H'] = pd.to_datetime(df_his['Espacio_H'], errors='coerce')
@@ -119,7 +119,7 @@ def obtener_ultimo_inventario(df_hist, unidad=None):
         
     if df_u.empty: return pd.DataFrame()
     
-    # UNIFICACIÓN DE FECHAS: Toma la fecha de Col O (Ingresos), y si está vacía usa Col F (Inventarios)
+    # UNIFICACIÓN DE FECHAS: Toma la fecha de Col O (Inventarios), y si está vacía usa Col F (Ingresos)
     df_u['Fecha de Inventario'] = df_u['Fecha de Inventario'].combine_first(df_u['Espacio_H'])
     
     # Ordenar cronológicamente y mantener solo el registro más reciente por Insumo y Unidad
@@ -335,8 +335,8 @@ elif st.session_state.pagina == "Inventario":
                     st.write(f"**{v_n:.1f}**")
                 
                 with c6: 
-                    auto_pedir = bool(v_n < v_min)
-                    v_p = st.toggle("🛒", value=auto_pedir, key=f"p_{i}")
+                    auto_pedir = bool(v_n < v_min) # Se mantiene la lógica según regla de Cero Recortes
+                    v_p = st.toggle("🛒", value=False, key=f"p_{i}") # Modificación quirúrgica solicitada
                 
                 regs[nom] = {"a": v_a, "b": v_b, "n": v_n, "u": v_u, "p": v_p, "row": row}
             st.divider()
@@ -346,11 +346,11 @@ elif st.session_state.pagina == "Inventario":
             fh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for n, info in regs.items():
                 dm = info["row"]
-                # CAPTURA DE INVENTARIO: La fecha de registro viaja en la Columna F (Índice 5) y la O (Índice 14) va en blanco.
+                # CAPTURA DE INVENTARIO: La fecha viaja en la Columna O (Índice 14), y la F (Índice 5) va en blanco.
                 filas.append([
-                    u_sel, n, dm.get('Marca',''), dm.get('Proveedor',''), dm.get('Grupo',''), fh, 
+                    u_sel, n, dm.get('Marca',''), dm.get('Proveedor',''), dm.get('Grupo',''), "", 
                     dm.get('Presentación de Compra',''), info["u"], info["a"], info["b"], 
-                    info["n"], dm.get('Stock Mínimo',0), "TRUE" if info["p"] else "FALSE", r_sel, ""
+                    info["n"], dm.get('Stock Mínimo',0), "TRUE" if info["p"] else "FALSE", r_sel, fh
                 ])
             try:
                 sh.worksheet("Historial").append_rows(filas)
@@ -426,11 +426,11 @@ elif st.session_state.pagina == "Ingresos":
                         nuevo_n = nuevo_a + v_b_prev
                         necesita = "TRUE" if nuevo_n < v_min else "FALSE"
                         
-                        # ENTRADA DE INSUMO: La columna F (Índice 5) va vacía, y la O (Índice 14) lleva la fecha de entrada.
+                        # ENTRADA DE INSUMO: La columna F (Índice 5) lleva la fecha de entrada, y la O (Índice 14) va vacía.
                         filas_bulk.append([
-                            u_sel, nom, row_insumo.get('Marca',''), row_insumo.get('Proveedor',''), row_insumo.get('Grupo',''), "", 
+                            u_sel, nom, row_insumo.get('Marca',''), row_insumo.get('Proveedor',''), row_insumo.get('Grupo',''), fh, 
                             row_insumo.get('Presentación de Compra',''), row_insumo.get('Unidad de Medida','pz'), 
-                            nuevo_a, v_b_prev, nuevo_n, v_min, necesita, r_sel, fh
+                            nuevo_a, v_b_prev, nuevo_n, v_min, necesita, r_sel, ""
                         ])
                 
                 if filas_bulk:
@@ -502,11 +502,11 @@ elif st.session_state.pagina == "Ingresos":
                         dm = info["row"]
                         necesita = "TRUE" if info["nuevo_n"] < info["min"] else "FALSE"
                         
-                        # ENTRADA DE INSUMO: La columna F (Índice 5) va vacía, y la O (Índice 14) lleva la fecha de entrada.
+                        # ENTRADA DE INSUMO: La columna F (Índice 5) lleva la fecha de entrada, y la O (Índice 14) va vacía.
                         filas.append([
-                            u_sel, n, dm.get('Marca',''), dm.get('Proveedor',''), dm.get('Grupo',''), "", 
+                            u_sel, n, dm.get('Marca',''), dm.get('Proveedor',''), dm.get('Grupo',''), fh, 
                             dm.get('Presentación de Compra',''), dm.get('Unidad de Medida','pz'), 
-                            info["nuevo_a"], info["b"], info["nuevo_n"], info["min"], necesita, r_sel, fh
+                            info["nuevo_a"], info["b"], info["nuevo_n"], info["min"], necesita, r_sel, ""
                         ])
                     try:
                         sh.worksheet("Historial").append_rows(filas)
