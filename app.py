@@ -4,6 +4,7 @@ import gspread
 import pandas as pd
 from datetime import datetime
 import time
+import calendar
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Noble & Coffee Station", page_icon="☕", layout="wide")
@@ -256,6 +257,14 @@ with st.sidebar:
 if st.session_state.pagina == "Dashboard":
     st.title("📊 Dashboard Operativo")
     
+    # Lógica de Recordatorio de Cierre
+    ahora = datetime.now()
+    ultimo_dia_mes = calendar.monthrange(ahora.year, ahora.month)[1]
+    dias_faltantes = ultimo_dia_mes - ahora.day
+    
+    if dias_faltantes <= 4:
+        st.info(f"⏳ **Recordatorio de Administración:** Estamos a {dias_faltantes} días del fin de mes. No olvides ejecutar el **Corte de Mes** una vez finalizados los últimos conteos para mantener el sistema optimizado.")
+
     df_actual = obtener_ultimo_inventario(df_historial)
     
     if not df_actual.empty:
@@ -705,7 +714,7 @@ elif st.session_state.pagina == "CorteMes":
                     # 4. Limpiar Historial y Escribir Snapshot en Cierres
                     st.write("Consolidando saldos iniciales...")
                     
-                    # Sobrescribir Cierres con el nuevo Snapshot (Borrar anteriores para que no se dupliquen)
+                    # Sobrescribir Cierres con el nuevo Snapshot
                     try:
                         ws_cie = sh.worksheet("Cierres")
                         ws_cie.clear()
