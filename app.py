@@ -23,7 +23,7 @@ except Exception as e:
     st.error("Error de conexión. Revisa los Secrets.")
     st.stop()
 
-# 2. CARGA DE DATOS
+# 2. CARGA DE DATOS (TTL corto para actualización rápida)
 @st.cache_data(ttl=30)
 def cargar_datos_maestros():
     return pd.DataFrame(insumos_sheet.get_all_records())
@@ -35,7 +35,7 @@ def cargar_historial():
 df_raw = cargar_datos_maestros()
 df_historial = cargar_historial()
 
-# 3. LÓGICA DE NAVEGACIÓN
+# 3. NAVEGACIÓN
 if "pagina" not in st.session_state:
     st.session_state.pagina = "Portada"
 
@@ -43,11 +43,11 @@ def cambiar_pagina(nombre):
     st.session_state.pagina = nombre
     st.rerun()
 
-# --- SIDEBAR ---
+# --- SIDEBAR (GESTIÓN TOTAL) ---
 with st.sidebar:
-    st.title("⚙️ Operaciones")
-    if st.button("📊 RESUMEN CRÍTICO", use_container_width=True): cambiar_pagina("Portada")
-    if st.button("📝 REGISTRAR INVENTARIO", use_container_width=True): cambiar_pagina("Inventario")
+    st.title("⚙️ Sistema Operativo")
+    if st.button("🏠 Portada / Compras", use_container_width=True): cambiar_pagina("Portada")
+    if st.button("📝 Registrar Inventario", use_container_width=True): cambiar_pagina("Inventario")
     
     st.divider()
     if "responsables" not in st.session_state:
@@ -57,93 +57,120 @@ with st.sidebar:
         n_nom = st.text_input("Nuevo Barista:")
         if st.button("➕ Agregar"):
             if n_nom: st.session_state.responsables.append(n_nom); st.rerun()
+        e_nom = st.selectbox("Eliminar:", st.session_state.responsables)
+        if st.button("🗑️ Quitar"):
+            if len(st.session_state.responsables) > 1:
+                st.session_state.responsables.remove(e_nom); st.rerun()
 
-# --- PÁGINA: PORTADA (ENFOQUE EN COLUMNA M) ---
+    st.divider()
+    op_insumo = st.radio("Insumos:", ["Añadir", "Editar"])
+
+    if op_insumo == "Añadir":
+        with st.form("f_add"):
+            u = st.selectbox("Unidad", ["Noble", "Coffee Station"])
+            n = st.text_input("Nombre")
+            m = st.text_input("Marca")
+            p = st.text_input("Proveedor")
+            g = st.selectbox("Grupo", ["A", "B", "C", "D", "E", "F"])
+            uc = st.text_input("Presentación de Compra")
+            um = st.selectbox("Unidad de Medida", ["pz", "ml", "gr", "%", "kg", "lt"])
+            sm = st.number_input("Mínimo", min_value=0.0)
+            if st.form_submit_button("✨ Crear"):
+                insumos_sheet.append_row([u, n, m, p, g, "", uc, um, "", "", "", sm])
+                st.cache_data.clear(); st.rerun()
+    else:
+        ins_editar = st.selectbox("Insumo a editar:", df_raw["Nombre del Insumo"].tolist() if not df_raw.empty else [])
+        if ins_editar:
+            d = df_raw[df_raw["Nombre del Insumo"] == ins_editar].iloc[0]
+            with st.form("f_edit"):
+                e_u = st.selectbox("Unidad", ["Noble", "Coffee Station"], index=0 if d["Unidad de Negocio"] == "Noble" else 1)
+                e_n = st.text_input("Nombre", value=str(d["Nombre del Insumo"]))
+                e_m = st.text_input("Marca", value=str(d.get("Marca","")))
+                e_p = st.text_input("Proveedor", value=str(d.get("Proveedor","")))
+                e_g = st.selectbox("Grupo", ["A","B","C","D","E","F"], index=["A","B","C","D","E","F"].index(d.get("Grupo","A")))
+                e_uc = st.text_input("Unidad de Compra", value=str(d.get("Presentación de Compra","")))
+                list_u = ["pz", "ml", "gr", "%", "kg", "lt"]
+                u_val = str(d.get("Unidad de Medida","pz")).lower()
+                e_um = st.selectbox("Medida", list_u, index=list_u.index(u_val) if u_val in list_u else 0)
+                e_sm = st.number_input("Mínimo", value=float(d.get("Stock Mínimo",0) or 0))
+                if st.form_submit_button("💾 Actualizar"):
+                    idx = df_raw[df_raw["Nombre del Insumo"] == ins_editar].index[0] + 2
+                    insumos_sheet.update(f'A{idx}:L{idx}', [[e_u, e_n, e_m, e_p, e_g, "", e_uc, e_um, "", "", "", e_sm]])
+                    st.cache_data.clear(); st.rerun()
+
+# --- PÁGINA: PORTADA ---
 if st.session_state.pagina == "Portada":
-    st.title("🚨 Prioridades de Compra")
-    st.info("Este resumen se basa en la Columna M (Criterio de Compra) del último registro.")
-
+    st.title("📊 Resumen y Compras (Columna M)")
     if not df_historial.empty:
         df_historial['Fecha de Inventario'] = pd.to_datetime(df_historial['Fecha de Inventario'])
-        ultimo_estado = df_historial.sort_values('Fecha de Inventario').drop_duplicates(['Unidad de Negocio', 'Nombre del Insumo'], keep='last')
-        
-        # Filtro de los que SI necesitan compra
-        por_comprar = ultimo_estado[ultimo_estado['Necesita Compra'].astype(str).str.upper() == "TRUE"].copy()
+        ultimo = df_historial.sort_values('Fecha de Inventario').drop_duplicates(['Unidad de Negocio', 'Nombre del Insumo'], keep='last')
+        criticos = ultimo[ultimo['Necesita Compra'].astype(str).str.upper() == "TRUE"]
         
         c1, c2 = st.columns(2)
-        with c1: st.metric("Noble: Críticos", len(por_comprar[por_comprar['Unidad de Negocio'] == "Noble"]))
-        with c2: st.metric("Coffee Station: Críticos", len(por_comprar[por_comprar['Unidad de Negocio'] == "Coffee Station"]))
+        with c1: st.metric("Noble: Críticos", len(criticos[criticos['Unidad de Negocio']=="Noble"]))
+        with c2: st.metric("Coffee Station: Críticos", len(criticos[criticos['Unidad de Negocio']=="Coffee Station"]))
         
-        st.divider()
-        sucursal = st.radio("Sucursal a surtir:", ["Noble", "Coffee Station"], horizontal=True)
-        lista = por_comprar[por_comprar['Unidad de Negocio'] == sucursal]
-
+        suc = st.radio("Ver Sucursal:", ["Noble", "Coffee Station"], horizontal=True)
+        lista = criticos[criticos['Unidad de Negocio'] == suc]
         if not lista.empty:
-            st.subheader(f"🛒 Lista de Compras Prioritaria - {sucursal}")
-            # Estilo de tarjetas para resaltar la importancia
-            for _, row in lista.iterrows():
-                with st.expander(f"🔴 {row['Nombre del Insumo']} (Stock: {row['Stock Neto']})"):
-                    col1, col2, col3 = st.columns(3)
-                    col1.write(f"**Marca:** {row.get('Marca','')}")
-                    col2.write(f"**Proveedor:** {row.get('Proveedor','')}")
-                    col3.write(f"**Mínimo:** {row.get('Stock Mínimo','')}")
-                    st.write(f"✍️ *Registrado por {row['Responsable']} el {row['Fecha de Inventario'].strftime('%d/%m %H:%M')}*")
-        else:
-            st.success(f"✅ ¡Felicidades! No hay insumos marcados para compra en {sucursal}.")
-    else:
-        st.warning("No hay historial para calcular prioridades.")
+            for _, r in lista.iterrows():
+                with st.expander(f"🔴 {r['Nombre del Insumo']} (Neto: {r['Stock Neto']})"):
+                    st.write(f"**Marca:** {r.get('Marca','')} | **Proveedor:** {r.get('Proveedor','')}")
+                    st.write(f"**U. Compra:** {r.get('Presentación de Compra','')} | **Mínimo:** {r.get('Stock Mínimo','')}")
+                    st.caption(f"Registrado por {r['Responsable']} el {r['Fecha de Inventario'].strftime('%d/%m %H:%M')}")
+        else: st.success(f"✅ Sin faltantes en {suc}")
+    else: st.info("Bienvenido. Registra el primer inventario.")
+    if st.button("🚀 INICIAR INVENTARIO DEL DÍA", use_container_width=True, type="primary"): cambiar_pagina("Inventario")
 
-    if st.button("🚀 INICIAR NUEVO LEVANTAMIENTO", use_container_width=True, type="primary"): cambiar_pagina("Inventario")
-
-# --- PÁGINA: INVENTARIO (APLICACIÓN DE CRITERIO HUMANO) ---
+# --- PÁGINA: INVENTARIO ---
 elif st.session_state.pagina == "Inventario":
     st.title("📝 Levantamiento de Stock")
-    
-    col_u, col_r, col_g = st.columns(3)
-    with col_u: u_sel = st.selectbox("🏢 Unidad", ["Noble", "Coffee Station"])
-    with col_r: resp = st.selectbox("👤 Responsable", st.session_state.responsables)
-    with col_g:
+    c_u, c_r, c_g = st.columns(3)
+    with c_u: u_sel = st.selectbox("🏢 Sucursal", ["Noble", "Coffee Station"])
+    with c_r: r_sel = st.selectbox("👤 Responsable", st.session_state.responsables)
+    with c_g:
         df_u = df_raw[df_raw["Unidad de Negocio"] == u_sel]
-        grupos = sorted(df_u["Grupo"].unique().tolist()) if not df_u.empty else ["A"]
-        g_sel = st.selectbox("📂 Grupo", grupos)
+        grps = sorted(df_u["Grupo"].unique().tolist()) if not df_u.empty else ["A"]
+        g_sel = st.selectbox("📂 Grupo", grps)
 
     df_f = df_u[df_u["Grupo"] == g_sel].reset_index(drop=True)
-
     if not df_f.empty:
-        registros = {}
-        st.markdown("### Insumos del Grupo")
-        for idx, row in df_f.iterrows():
-            with st.container():
-                c1, c2, c3, c4, c5 = st.columns([2.5, 1, 1, 1, 1.5])
-                with c1:
-                    st.write(f"**{row['Nombre del Insumo']}**")
-                    st.caption(f"{row.get('Marca','')} | {row.get('Presentación de Compra','')}")
-                with c2: alm = st.number_input("Almacén", min_value=0.0, step=1.0, key=f"a{idx}")
-                with c3: act = st.number_input("Barra", min_value=0.0, step=0.1, key=f"t{idx}")
-                with c4:
-                    neto = alm + act
-                    st.metric("Neto", f"{neto:.1f}")
-                with c5:
-                    # AQUÍ ESTÁ EL PODER DE LA COLUMNA M:
-                    # El sistema sugiere comprar si neto <= mínimo, pero el barista PUEDE cambiarlo
-                    s_min = float(row.get("Stock Mínimo", 0) or 0)
-                    sugiere_compra = neto <= s_min
-                    criterio_humano = st.toggle("¿Pedir?", value=sugiere_compra, key=f"m{idx}", help="Activa esto para marcarlo como prioridad de compra.")
-                
-                registros[row['Nombre del Insumo']] = {"alm": alm, "act": act, "neto": neto, "compra": criterio_humano, "row": row}
-                st.divider()
+        regs = {}
+        # Encabezados
+        h1, h2, h3, h4, h5, h6 = st.columns([2, 1, 1, 1, 1, 1])
+        with h1: st.write("**Insumo**")
+        with h2: st.write("**Alm.**")
+        with h3: st.write("**Barra**")
+        with h4: st.write("**Medida**")
+        with h5: st.write("**Neto**")
+        with h6: st.write("**¿Pedir?**")
+        st.divider()
 
-        if st.button("📥 FINALIZAR REGISTRO", use_container_width=True, type="primary"):
-            filas = []
-            f_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            for nom, info in registros.items():
-                dm = info["row"]
-                compra_val = "TRUE" if info["compra"] else "FALSE"
-                filas.append([u_sel, nom, dm.get('Marca',''), dm.get('Proveedor',''), dm.get('Grupo',''), "", 
-                              dm.get('Presentación de Compra',''), dm.get('Unidad de Medida','pz'), 
-                              info["alm"], info["act"], info["neto"], dm.get('Stock Mínimo',0), 
-                              compra_val, resp, f_hoy])
+        for i, row in df_f.iterrows():
+            c1, c2, c3, c4, c5, c6 = st.columns([2, 1, 1, 1, 1, 1])
+            with c1: st.write(f"**{row['Nombre del Insumo']}**"); st.caption(row.get('Marca',''))
+            with c2: v_alm = st.number_input("A", min_value=0.0, step=1.0, key=f"a{i}", label_visibility="collapsed")
+            with c3: v_bar = st.number_input("B", min_value=0.0, step=0.1, key=f"b{i}", label_visibility="collapsed")
+            with c4:
+                unid_list = ["pz", "ml", "gr", "%", "kg", "lt"]
+                u_curr = str(row.get("Unidad de Medida","pz")).lower()
+                v_uni = st.selectbox("M", unid_list, index=unid_list.index(u_curr) if u_curr in unid_list else 0, key=f"u{i}", label_visibility="collapsed")
+            with c5:
+                v_neto = v_alm + v_bar
+                st.write(f"**{v_neto:.1f}**")
+            with c6: v_com = st.toggle("P", value=False, key=f"p{i}")
             
+            regs[row['Nombre del Insumo']] = {"alm": v_alm, "bar": v_bar, "neto": v_neto, "um": v_uni, "ped": v_com, "row": row}
+            st.write("---")
+
+        if st.button("📥 FINALIZAR Y GUARDAR", use_container_width=True, type="primary"):
+            filas = []
+            fh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for n, info in regs.items():
+                dm = info["row"]
+                pedir = "TRUE" if info["ped"] else "FALSE"
+                filas.append([u_sel, n, dm.get('Marca',''), dm.get('Proveedor',''), dm.get('Grupo',''), "", 
+                              dm.get('Presentación de Compra',''), info["um"], info["alm"], info["bar"], 
+                              info["neto"], dm.get('Stock Mínimo',0), pedir, r_sel, fh])
             historial_sheet.append_rows(filas)
-            st.cache_data.clear()
-            st.success("✅ Inventario y Prioridades guardadas."); st.balloons()
+            st.cache_data.clear(); st.success("✅ Guardado."); st.balloons()
