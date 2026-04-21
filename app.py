@@ -23,7 +23,7 @@ def conectar_google_sheets():
 
 sh = conectar_google_sheets()
 
-# --- 2. CAPA DE LIMPIEZA Y NORMALIZACIÓN DE DATOS ---
+# --- 2. CAPA DE EXTRACCIÓN Y NORMALIZACIÓN DE DATOS ---
 def limpiar_valor(valor):
     if pd.isna(valor) or valor is None or str(valor).strip() == "": 
         return 0.0
@@ -108,7 +108,31 @@ def cargar_datos_integrales():
         st.error(f"Falla en la extracción de datos: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
+# --- 2.5 BASE DE DATOS DE USUARIOS (DINÁMICA) ---
+@st.cache_data(ttl=5)
+def obtener_usuarios():
+    if not sh: return {}, [], pd.DataFrame()
+    try:
+        ws = sh.worksheet("Accesos")
+    except:
+        ws = sh.add_worksheet(title="Accesos", rows="100", cols="3")
+        ws.append_row(["Clave", "Nombre", "Rol"])
+        ws.append_rows([
+            ["13070518", "Raúl", "admin"],
+            ["987654", "Jenny", "barista"],
+            ["ilecara", "Araceli", "barista"]
+        ])
+    
+    data = ws.get_all_values()
+    if len(data) > 1:
+        df_usr = pd.DataFrame(data[1:], columns=data[0])
+        usuarios_dict = {str(row["Clave"]): {"nombre": str(row["Nombre"]), "rol": str(row["Rol"])} for _, row in df_usr.iterrows()}
+        lista_nombres = df_usr["Nombre"].tolist()
+        return usuarios_dict, lista_nombres, df_usr
+    return {}, [], pd.DataFrame()
+
 df_raw, df_historial = cargar_datos_integrales()
+USUARIOS_PIN, LISTA_RESPONSABLES, DF_USUARIOS = obtener_usuarios()
 
 # --- 3. LÓGICA DE NEGOCIO ---
 def obtener_ultimo_inventario(df_hist, unidad=None):
@@ -131,25 +155,18 @@ def obtener_ultimo_inventario(df_hist, unidad=None):
     
     return df_actual
 
-# --- 3.5 SISTEMA DE SEGURIDAD (LOGIN) ---
+# --- 4. RUTEO Y ESTADO DE SESIÓN ---
 if "auth_status" not in st.session_state:
     st.session_state.auth_status = False
 if "current_user" not in st.session_state:
     st.session_state.current_user = None
 if "user_role" not in st.session_state:
     st.session_state.user_role = None
-
-USUARIOS_PIN = {
-    "123456": {"nombre": "Raúl", "rol": "admin"},
-    "111111": {"nombre": "Jenny", "rol": "barista"},
-    "222222": {"nombre": "Araceli", "rol": "barista"}
-}
-
-# --- 4. RUTEO Y ESTADO DE SESIÓN ---
 if "pagina" not in st.session_state: 
     st.session_state.pagina = "Dashboard"
-if "responsables" not in st.session_state:
-    st.session_state.responsables = ["Jenny", "Araceli", "Raúl"]
+
+# Inyectar lista de responsables dinámicamente
+st.session_state.responsables = LISTA_RESPONSABLES if LISTA_RESPONSABLES else ["Raúl"]
 
 def cambiar_pagina(nombre):
     st.session_state.pagina = nombre
@@ -161,7 +178,7 @@ with st.sidebar:
         st.subheader("🔒 Identificación")
         st.write("Inicia sesión para editar datos.")
         with st.form("login_form"):
-            pin_input = st.text_input("Ingresa tu PIN:", type="password", max_chars=6)
+            pin_input = st.text_input("Ingresa tu Clave:", type="password") # Límite removido
             submitted = st.form_submit_button("Desbloquear Sistema", type="primary", use_container_width=True)
             
             if submitted:
@@ -171,7 +188,7 @@ with st.sidebar:
                     st.session_state.user_role = USUARIOS_PIN[pin_input]["rol"]
                     st.rerun()
                 else:
-                    st.error("⚠️ PIN incorrecto o no registrado.")
+                    st.error("⚠️ Clave incorrecta o no registrada.")
     else:
         st.write(f"👤 Operador: **{st.session_state.current_user}**")
         if st.button("🚪 Cerrar Sesión", use_container_width=True):
@@ -203,11 +220,51 @@ with st.sidebar:
         if st.button("🔒 Corte de Mes", use_container_width=True): cambiar_pagina("CorteMes")
         
         st.divider()
-        with st.expander("👤 Equipo de Barra"):
-            n_barista = st.text_input("Nuevo Barista:")
-            if st.button("➕ Agregar Barista") and n_barista:
-                st.session_state.responsables.append(n_barista)
-                st.rerun()
+        # NUEVO MÓDULO DE GESTIÓN DE USUARIOS
+        with st.expander("👤 Gestión de Accesos"):
+            st.write("**Agregar / Actualizar Barista**")
+            n_nombre = st.text_input("Nombre de Usuario:")
+            n_clave = st.text_input("Clave de Acceso:")
+            n_rol = st.selectbox("Nivel de Permisos:", ["barista", "admin"])
+            
+            if st.button("➕ Guardar Usuario", use_container_width=True):
+                if n_nombre and n_clave:
+                    try:
+                        nuevo_df = DF_USUARIOS.copy()
+                        # Si el nombre ya existe, lo filtramos para sobreescribirlo
+                        nuevo_df = nuevo_df[nuevo_df["Nombre"] != n_nombre] 
+                        nueva_fila = pd.DataFrame([{"Clave": str(n_clave), "Nombre": n_nombre, "Rol": n_rol}])
+                        nuevo_df = pd.concat([nuevo_df, nueva_fila], ignore_index=True)
+                        
+                        ws = sh.worksheet("Accesos")
+                        ws.clear()
+                        ws.append_row(["Clave", "Nombre", "Rol"])
+                        ws.append_rows(nuevo_df.values.tolist())
+                        st.cache_data.clear()
+                        st.success(f"Permisos para '{n_nombre}' guardados.")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al guardar: {e}")
+                else:
+                    st.warning("Completa nombre y clave.")
+            
+            st.divider()
+            st.write("**Eliminar Barista**")
+            u_del = st.selectbox("Seleccionar:", LISTA_RESPONSABLES)
+            if st.button("❌ Borrar Acceso", use_container_width=True):
+                try:
+                    nuevo_df = DF_USUARIOS[DF_USUARIOS["Nombre"] != u_del]
+                    ws = sh.worksheet("Accesos")
+                    ws.clear()
+                    ws.append_row(["Clave", "Nombre", "Rol"])
+                    ws.append_rows(nuevo_df.values.tolist())
+                    st.cache_data.clear()
+                    st.success(f"Acceso revocado para {u_del}.")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {e}")
 
         st.divider()
         st.subheader("🛠️ Gestión del Catálogo")
@@ -328,7 +385,7 @@ if st.session_state.pagina == "Dashboard":
 elif st.session_state.pagina == "Inventario":
     st.title("📝 Capturar inventario")
     if not st.session_state.auth_status:
-        st.error("🔒 Autenticación requerida. Por favor ingresa tu PIN en el menú lateral para habilitar la captura de inventario.")
+        st.error("🔒 Autenticación requerida. Por favor ingresa tu Clave en el menú lateral para habilitar la captura de inventario.")
     else:
         col_u, col_r, col_g = st.columns([1, 1, 2])
         with col_u: u_sel = st.selectbox("🏢 Unidad de Negocio", ["Noble", "Coffee Station"])
@@ -420,7 +477,7 @@ elif st.session_state.pagina == "Inventario":
 elif st.session_state.pagina == "Ingresos":
     st.title("📥 Entrada de compras")
     if not st.session_state.auth_status:
-        st.error("🔒 Autenticación requerida. Por favor ingresa tu PIN en el menú lateral para registrar entradas.")
+        st.error("🔒 Autenticación requerida. Por favor ingresa tu Clave en el menú lateral para registrar entradas.")
     else:
         st.info("Ingresa insumos recibidos. Se sumarán a tu último corte de Almacén.")
         
