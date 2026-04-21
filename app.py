@@ -23,7 +23,7 @@ except Exception as e:
     st.error("Error de conexión. Revisa los Secrets.")
     st.stop()
 
-# 2. CARGA DE DATOS (BLINDADA)
+# 2. CARGA DE DATOS (PROTEGIDA)
 @st.cache_data(ttl=30)
 def cargar_datos_maestros():
     data = insumos_sheet.get_all_records()
@@ -48,7 +48,7 @@ def cambiar_pagina(nombre):
     st.session_state.pagina = nombre
     st.rerun()
 
-# --- SIDEBAR: GESTIÓN DE EQUIPO E INSUMOS ---
+# --- SIDEBAR: GESTIÓN COMPLETA ---
 with st.sidebar:
     st.title("⚙️ Operaciones")
     if st.button("🏠 Portada / Compras", use_container_width=True): cambiar_pagina("Portada")
@@ -122,58 +122,58 @@ if st.session_state.pagina == "Portada":
                         st.write(f"**Marca:** {r.get('Marca','')} | **Proveedor:** {r.get('Proveedor','')}")
                         st.caption(f"Registrado por {r.get('Responsable','-')} el {r['Fecha de Inventario'].strftime('%d/%m %H:%M')}")
             else: st.success(f"✅ Sin faltantes en {suc}")
-        except: st.info("Cargando datos...")
-    else: st.info("Inicia un inventario para ver prioridades.")
+        except: st.info("Sincronizando con Google Sheets...")
+    else: st.info("Historial vacío. Realiza el primer levantamiento.")
     if st.button("🚀 INICIAR INVENTARIO", use_container_width=True, type="primary"): cambiar_pagina("Inventario")
 
-# --- PÁGINA: INVENTARIO (CON MULTIGRUPO) ---
+# --- PÁGINA: INVENTARIO (MULTI-GRUPO + TEXTOS COMPLETOS) ---
 elif st.session_state.pagina == "Inventario":
     st.title("📝 Levantamiento de Stock")
-    c_u, c_r, c_g = st.columns([1, 1, 2]) # Más espacio para multiselección
+    c_u, c_r, c_g = st.columns([1, 1, 2])
     with c_u: u_sel = st.selectbox("🏢 Unidad", ["Noble", "Coffee Station"])
     with c_r: r_sel = st.selectbox("👤 Responsable", st.session_state.responsables)
     with c_g:
         df_u = df_raw[df_raw["Unidad de Negocio"] == u_sel] if not df_raw.empty else pd.DataFrame()
         grps_disponibles = sorted(df_u["Grupo"].unique().tolist()) if not df_u.empty else ["A"]
-        # ACTUALIZACIÓN: Multiselección de grupos
         g_sel = st.multiselect("📂 Seleccionar Grupos", grps_disponibles, default=grps_disponibles[:1])
 
     ultimo_registro = pd.DataFrame()
-    if not df_historial.empty and "Nombre del Insumo" in df_historial.columns:
+    if not df_historial.empty and all(k in df_historial.columns for k in ["Unidad de Negocio", "Nombre del Insumo", "Stock Neto"]):
         try:
             df_historial['Fecha de Inventario'] = pd.to_datetime(df_historial['Fecha de Inventario'])
             ultimo_registro = df_historial.sort_values('Fecha de Inventario').drop_duplicates(['Unidad de Negocio', 'Nombre del Insumo'], keep='last')
         except: pass
 
-    # Filtrar por los grupos seleccionados
     df_f = df_u[df_u["Grupo"].isin(g_sel)].reset_index(drop=True) if not df_u.empty else pd.DataFrame()
     
     if not df_f.empty:
         regs = {}
-        h1, h2, h3, h4, h5, h6 = st.columns([2.5, 1, 1, 1, 1, 1])
+        # Encabezados con el "¿Pedir? 🛒" completo
+        h1, h2, h3, h4, h5, h6 = st.columns([2.5, 1, 1, 1, 1, 1.2])
         with h1: st.write("**Insumo / Referencia**")
         with h2: st.write("**Alm.**")
         with h3: st.write("**Barra**")
         with h4: st.write("**Medida**")
         with h5: st.write("**Neto**")
-        with h6: st.write("**¿Pedir?**")
+        with h6: st.write("**¿Pedir? 🛒**")
         st.divider()
 
-        # Ordenar por grupo para claridad visual
-        df_f = df_f.sort_values("Grupo")
+        df_f = df_f.sort_values(["Grupo", "Nombre del Insumo"])
 
         for i, row in df_f.iterrows():
             nom = row['Nombre del Insumo']
             v_prev = 0.0
             if not ultimo_registro.empty:
-                match = ultimo_registro[(ultimo_registro['Unidad de Negocio'] == u_sel) & (ultimo_registro['Nombre del Insumo'] == nom)]
-                if not match.empty: v_prev = float(match.iloc[0].get('Stock Neto', 0.0))
+                try:
+                    match = ultimo_registro[(ultimo_registro['Unidad de Negocio'] == u_sel) & (ultimo_registro['Nombre del Insumo'] == nom)]
+                    if not match.empty: v_prev = float(match.iloc[0].get('Stock Neto', 0.0))
+                except: v_prev = 0.0
 
             try: v_min = float(row.get('Stock Mínimo', 0) or 0)
             except: v_min = 0.0
             
             with st.container():
-                c1, c2, c3, c4, c5, c6 = st.columns([2.5, 1, 1, 1, 1, 1])
+                c1, c2, c3, c4, c5, c6 = st.columns([2.5, 1, 1, 1, 1, 1.2])
                 with c1: 
                     st.write(f"**{nom}**")
                     st.caption(f"Marca: {row.get('Marca','-')} | Proveedor: {row.get('Proveedor','-')}")
@@ -190,7 +190,7 @@ elif st.session_state.pagina == "Inventario":
                 with c5:
                     v_n = v_a + v_b
                     st.write(f"**{v_n:.1f}**")
-                with c6: v_p = st.toggle("P", value=False, key=f"p{i}")
+                with c6: v_p = st.toggle("Pedir", value=False, key=f"p{i}", label_visibility="collapsed")
                 
                 regs[nom] = {"alm": v_a, "bar": v_b, "neto": v_n, "um": v_u, "ped": v_p, "row": row}
             st.divider()
@@ -204,4 +204,6 @@ elif st.session_state.pagina == "Inventario":
                               dm.get('Presentación de Compra',''), info["um"], info["alm"], info["bar"], 
                               info["neto"], dm.get('Stock Mínimo',0), "TRUE" if info["ped"] else "FALSE", r_sel, fh])
             historial_sheet.append_rows(filas)
-            st.cache_data.clear(); st.success("Guardado correctamente"); st.balloons()
+            st.cache_data.clear(); st.success("Inventario guardado en la nube."); st.balloons()
+    else:
+        st.warning("Selecciona al menos un grupo para comenzar.")
