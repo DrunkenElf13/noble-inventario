@@ -452,15 +452,15 @@ elif st.session_state.pagina == "Consulta":
         col_search, col_prov = st.columns([2, 1])
         with col_search: busqueda = st.text_input("🔍 Búsqueda rápida:")
         with col_prov:
-            provs = ["Todos"] + sorted(df_actual['Proveedor'].dropna().unique().tolist())
+            provs = ["Todos"] + sorted(df_actual['Proveedor_H'].dropna().unique().tolist())
             prov_sel = st.selectbox("🚛 Filtro Proveedor:", provs)
         
         df_display = df_actual.copy()
         if busqueda: df_display = df_display[df_display['Nombre del Insumo'].astype(str).str.contains(busqueda, case=False, na=False)]
-        if prov_sel != "Todos": df_display = df_display[df_display['Proveedor'] == prov_sel]
+        if prov_sel != "Todos": df_display = df_display[df_display['Proveedor_H'] == prov_sel]
         
         st.subheader(f"Estatus de Flujo - {u_sel}")
-        df_final = df_display[['Grupo', 'Nombre del Insumo', 'Marca', 'Proveedor', 'Alm', 'Barra', 'Stock Neto Calculado', 'Unidad de Medida', 'Stock Mínimo', 'Fecha de Inventario']].copy()
+        df_final = df_display[['Grupo_H', 'Nombre del Insumo', 'Marca_H', 'Proveedor_H', 'Alm', 'Barra', 'Stock Neto Calculado', 'Unidad_Medida_H', 'Stock Mínimo', 'Fecha de Inventario']].copy()
         df_final.columns = ['Grupo', 'Insumo', 'Marca', 'Proveedor', 'Almacén', 'Barra', 'Stock Total', 'Medida', 'Mínimo', 'Último Corte']
         
         def highlight_low_stock(s):
