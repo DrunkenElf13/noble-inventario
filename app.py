@@ -66,8 +66,7 @@ with st.sidebar:
     st.write("**📦 Movimientos de Stock:**")
     if st.button("📝 1. Conteo de Inventario", use_container_width=True): cambiar_pagina("Inventario")
     if st.button("📥 2. Ingreso de Compras", use_container_width=True): cambiar_pagina("Ingresos")
-    if st.button("📦 3. Ver Inventario Actual", use_container_width=True):
-    cambiar_pagina("Consulta")
+    if st.button("📦 3. Ver Inventario Actual", use_container_width=True): cambiar_pagina("Consulta")
     
     st.divider()
     st.write("**🖨️ Tickets (58mm):**")
