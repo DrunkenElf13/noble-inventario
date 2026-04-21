@@ -88,13 +88,13 @@ def cargar_datos_integrales():
         
         # PLANTILLAS ESTRICTAS DE POSICIÓN (Basado en el orden exacto del append de la app)
         cols_insumos = ['Unidad de Negocio', 'Nombre del Insumo', 'Marca', 'Proveedor', 'Grupo', 'Espacio_1', 'Presentación de Compra', 'Unidad de Medida', 'Espacio_2', 'Espacio_3', 'Espacio_4', 'Stock Mínimo']
-        cols_historial = ['Unidad de Negocio', 'Nombre del Insumo', 'Marca_H', 'Proveedor_H', 'Grupo_H', 'Espacio_H', 'Pres_Compra_H', 'Unidad_Medida_H', 'Alm', 'Barra', 'Stock Neto', 'Stock Mínimo', 'Necesita Compra', 'Responsable', 'Fecha de Inventario']
+        # Extendemos a 16 columnas para incluir Comentarios (P)
+        cols_historial = ['Unidad de Negocio', 'Nombre del Insumo', 'Marca_H', 'Proveedor_H', 'Grupo_H', 'Espacio_H', 'Pres_Compra_H', 'Unidad_Medida_H', 'Alm', 'Barra', 'Stock Neto', 'Stock Mínimo', 'Necesita Compra', 'Responsable', 'Fecha de Inventario', 'Comentarios']
         
         df_ins = normalizar_dataframe(df_ins, cols_insumos)
         df_his = normalizar_dataframe(df_his, cols_historial)
         
         # Parseo seguro de fechas para ordenamiento cronológico. 
-        # Espacio_H (F) = Ingresos, Fecha de Inventario (O) = Inventarios
         if not df_his.empty:
             df_his['Fecha de Inventario'] = pd.to_datetime(df_his['Fecha de Inventario'], errors='coerce')
             df_his['Espacio_H'] = pd.to_datetime(df_his['Espacio_H'], errors='coerce')
@@ -151,9 +151,9 @@ with st.sidebar:
     
     st.divider()
     st.write("**📦 Movimientos de Stock:**")
-    if st.button("📝 1. Conteo de Inventario", use_container_width=True): cambiar_pagina("Inventario")
-    if st.button("📥 2. Ingreso de Compras", use_container_width=True): cambiar_pagina("Ingresos")
-    if st.button("📦 3. Ver Inventario Actual", use_container_width=True): cambiar_pagina("Consulta")
+    if st.button("📝 1. Capturar inventario", use_container_width=True): cambiar_pagina("Inventario")
+    if st.button("📥 2. Entrada de compras", use_container_width=True): cambiar_pagina("Ingresos")
+    if st.button("📦 3. Inventario actual", use_container_width=True): cambiar_pagina("Consulta")
     
     st.divider()
     st.write("**🖨️ Tickets (58mm):**")
@@ -271,12 +271,12 @@ if st.session_state.pagina == "Dashboard":
         df_log_display = df_historial.copy()
         df_log_display['Fecha de Inventario'] = df_log_display['Fecha de Inventario'].combine_first(df_log_display['Espacio_H'])
         logs_mostrar = df_log_display.dropna(subset=['Fecha de Inventario']).sort_values('Fecha de Inventario', ascending=False)
-        st.dataframe(logs_mostrar[['Fecha de Inventario', 'Responsable', 'Unidad de Negocio', 'Nombre del Insumo', 'Stock Neto', 'Necesita Compra']].head(15), use_container_width=True)
+        st.dataframe(logs_mostrar[['Fecha de Inventario', 'Responsable', 'Unidad de Negocio', 'Nombre del Insumo', 'Stock Neto', 'Necesita Compra', 'Comentarios']].head(15), use_container_width=True)
     else: 
         st.info("Sin datos históricos. Ejecuta el primer conteo de inventario.")
 
 elif st.session_state.pagina == "Inventario":
-    st.title("📝 Conteo de Inventario")
+    st.title("📝 Capturar inventario")
     
     col_u, col_r, col_g = st.columns([1, 1, 2])
     with col_u: u_sel = st.selectbox("🏢 Unidad de Negocio", ["Noble", "Coffee Station"])
@@ -293,13 +293,14 @@ elif st.session_state.pagina == "Inventario":
     
     if not df_f.empty:
         regs = {}
-        h1, h2, h3, h4, h5, h6 = st.columns([2.5, 1, 1, 1, 1, 1.2])
+        h1, h2, h3, h4, h5, h6, h7 = st.columns([2.2, 0.8, 0.8, 0.8, 0.8, 1.0, 2.0])
         with h1: st.write("**Insumo / Ref**")
         with h2: st.write("**Almacén**")
         with h3: st.write("**Barra**")
         with h4: st.write("**Medida**")
         with h5: st.write("**Neto**")
         with h6: st.write("**¿Pedir?**")
+        with h7: st.write("**Comentarios**")
         st.divider()
 
         for i, row in df_f.iterrows():
@@ -314,10 +315,10 @@ elif st.session_state.pagina == "Inventario":
             v_min = limpiar_valor(row.get('Stock Mínimo', 0))
 
             with st.container():
-                c1, c2, c3, c4, c5, c6 = st.columns([2.5, 1, 1, 1, 1, 1.2])
+                c1, c2, c3, c4, c5, c6, c7 = st.columns([2.2, 0.8, 0.8, 0.8, 0.8, 1.0, 2.0])
                 with c1:
                     st.write(f"**{nom}**")
-                    st.caption(f"Prov: {row.get('Proveedor','-')}")
+                    st.caption(f"Marca: {row.get('Marca','-')} | Prov: {row.get('Proveedor','-')}")
                     diff = v_prev - v_min
                     color = "green" if diff >= 0 else "red"
                     st.markdown(f"<small>Anterior: {v_prev} | Mín: {v_min} (<span style='color:{color}'>{diff:+.1f}</span>)</small>", unsafe_allow_html=True)
@@ -335,10 +336,12 @@ elif st.session_state.pagina == "Inventario":
                     st.write(f"**{v_n:.1f}**")
                 
                 with c6: 
-                    auto_pedir = bool(v_n < v_min) # Se mantiene la lógica según regla de Cero Recortes
-                    v_p = st.toggle("🛒", value=False, key=f"p_{i}") # Modificación quirúrgica solicitada
+                    v_p = st.toggle("🛒", value=False, key=f"p_{i}") 
                 
-                regs[nom] = {"a": v_a, "b": v_b, "n": v_n, "u": v_u, "p": v_p, "row": row}
+                with c7:
+                    v_c = st.text_input("Nota...", key=f"c_{i}", label_visibility="collapsed", placeholder="Opcional")
+                
+                regs[nom] = {"a": v_a, "b": v_b, "n": v_n, "u": v_u, "p": v_p, "c": v_c, "row": row}
             st.divider()
 
         if st.button("📥 PROCESAR INVENTARIO", use_container_width=True, type="primary"):
@@ -347,10 +350,11 @@ elif st.session_state.pagina == "Inventario":
             for n, info in regs.items():
                 dm = info["row"]
                 # CAPTURA DE INVENTARIO: La fecha viaja en la Columna O (Índice 14), y la F (Índice 5) va en blanco.
+                # Columna P (Índice 15) para Comentarios.
                 filas.append([
                     u_sel, n, dm.get('Marca',''), dm.get('Proveedor',''), dm.get('Grupo',''), "", 
                     dm.get('Presentación de Compra',''), info["u"], info["a"], info["b"], 
-                    info["n"], dm.get('Stock Mínimo',0), "TRUE" if info["p"] else "FALSE", r_sel, fh
+                    info["n"], dm.get('Stock Mínimo',0), "TRUE" if info["p"] else "FALSE", r_sel, fh, info["c"]
                 ])
             try:
                 sh.worksheet("Historial").append_rows(filas)
@@ -362,7 +366,7 @@ elif st.session_state.pagina == "Inventario":
                 st.error(f"Falla al escribir en base de datos: {e}")
 
 elif st.session_state.pagina == "Ingresos":
-    st.title("📥 Registro de Compras (Entradas)")
+    st.title("📥 Entrada de compras")
     st.info("Ingresa insumos recibidos. Se sumarán a tu último corte de Almacén.")
     
     col_u, col_r = st.columns(2)
@@ -426,11 +430,11 @@ elif st.session_state.pagina == "Ingresos":
                         nuevo_n = nuevo_a + v_b_prev
                         necesita = "TRUE" if nuevo_n < v_min else "FALSE"
                         
-                        # ENTRADA DE INSUMO: La columna F (Índice 5) lleva la fecha de entrada, y la O (Índice 14) va vacía.
+                        # ENTRADA DE INSUMO: Columna F (Índice 5) fecha, O (Índice 14) vacía, P (Índice 15) vacía.
                         filas_bulk.append([
                             u_sel, nom, row_insumo.get('Marca',''), row_insumo.get('Proveedor',''), row_insumo.get('Grupo',''), fh, 
                             row_insumo.get('Presentación de Compra',''), row_insumo.get('Unidad de Medida','pz'), 
-                            nuevo_a, v_b_prev, nuevo_n, v_min, necesita, r_sel, ""
+                            nuevo_a, v_b_prev, nuevo_n, v_min, necesita, r_sel, "", ""
                         ])
                 
                 if filas_bulk:
@@ -475,7 +479,7 @@ elif st.session_state.pagina == "Ingresos":
                         c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
                         with c1: 
                             st.write(f"**{nom}**")
-                            st.caption(f"Medida: {row_insumo.get('Unidad de Medida', 'pz')}")
+                            st.caption(f"Marca: {row_insumo.get('Marca','-')} | Prov: {row_insumo.get('Proveedor', '-')}")
                         with c2: 
                             st.write(f"Almacén: {v_a_prev} | Barra: {v_b_prev}")
                             st.write(f"**Total Ant: {v_n_prev}**")
@@ -502,11 +506,11 @@ elif st.session_state.pagina == "Ingresos":
                         dm = info["row"]
                         necesita = "TRUE" if info["nuevo_n"] < info["min"] else "FALSE"
                         
-                        # ENTRADA DE INSUMO: La columna F (Índice 5) lleva la fecha de entrada, y la O (Índice 14) va vacía.
+                        # ENTRADA DE INSUMO: F fecha, O vacía, P vacía.
                         filas.append([
                             u_sel, n, dm.get('Marca',''), dm.get('Proveedor',''), dm.get('Grupo',''), fh, 
                             dm.get('Presentación de Compra',''), dm.get('Unidad de Medida','pz'), 
-                            info["nuevo_a"], info["b"], info["nuevo_n"], info["min"], necesita, r_sel, ""
+                            info["nuevo_a"], info["b"], info["nuevo_n"], info["min"], necesita, r_sel, "", ""
                         ])
                     try:
                         sh.worksheet("Historial").append_rows(filas)
@@ -518,7 +522,7 @@ elif st.session_state.pagina == "Ingresos":
                         st.error(f"Falla al registrar ingresos: {e}")
 
 elif st.session_state.pagina == "Consulta":
-    st.title("📦 Auditoría de Inventario Actual")
+    st.title("📦 Inventario actual")
     u_sel = st.selectbox("🏢 Unidad:", ["Noble", "Coffee Station"])
     
     df_actual = obtener_ultimo_inventario(df_historial, u_sel)
@@ -542,8 +546,8 @@ elif st.session_state.pagina == "Consulta":
         if prov_sel != "Todos": df_display = df_display[df_display['Proveedor_H'] == prov_sel]
         
         st.subheader(f"Estatus de Flujo - {u_sel}")
-        df_final = df_display[['Grupo_H', 'Nombre del Insumo', 'Marca_H', 'Proveedor_H', 'Alm', 'Barra', 'Stock Neto Calculado', 'Unidad_Medida_H', 'Stock Mínimo', 'Fecha de Inventario']].copy()
-        df_final.columns = ['Grupo', 'Insumo', 'Marca', 'Proveedor', 'Almacén', 'Barra', 'Stock Total', 'Medida', 'Mínimo', 'Último Corte']
+        df_final = df_display[['Grupo_H', 'Nombre del Insumo', 'Marca_H', 'Proveedor_H', 'Alm', 'Barra', 'Stock Neto Calculado', 'Unidad_Medida_H', 'Stock Mínimo', 'Fecha de Inventario', 'Comentarios']].copy()
+        df_final.columns = ['Grupo', 'Insumo', 'Marca', 'Proveedor', 'Almacén', 'Barra', 'Stock Total', 'Medida', 'Mínimo', 'Último Corte', 'Comentarios']
         
         def highlight_low_stock(s):
             return ['background-color: rgba(255, 75, 75, 0.2)' if (s['Stock Total'] < s['Mínimo']) else '' for _ in s]
@@ -553,7 +557,7 @@ elif st.session_state.pagina == "Consulta":
         st.warning("No hay registros en la base de datos para ejecutar la auditoría.")
 
 elif st.session_state.pagina == "Impresion":
-    st.title("🖨️ Logística: Ticket de Conteo")
+    st.title("🖨️ Ticket de Conteo (58mm)")
     u_sel = st.selectbox("Sucursal:", ["Noble", "Coffee Station"])
     df_u = df_raw[df_raw["Unidad de Negocio"] == u_sel] if not df_raw.empty else pd.DataFrame()
     
@@ -563,17 +567,20 @@ elif st.session_state.pagina == "Impresion":
     if g_sel and not df_u.empty:
         df_p = df_u[df_u["Grupo"].isin(g_sel)].sort_values(["Grupo", "Nombre del Insumo"])
         t = f"*** CONTEO {u_sel.upper()} ***\n"
-        t += f"Resp: {st.session_state.responsables[0] if st.session_state.responsables else ''}\n"
+        t += f"Fecha: {datetime.now().strftime('%d/%m/%Y')}\n"
         t += "-"*22 + "\n"
         for _, r in df_p.iterrows(): 
-            t += f"[ ] {r['Nombre del Insumo'][:20]}\n"
-        t += "-"*22 + "\n"
-        st.text_area("Formato Térmico (58mm):", value=t, height=450)
+            t += f" {r['Nombre del Insumo'][:20]}\n"
+            t += f" [   ] Alm [   ] Bar\n"
+            t += "-"*22 + "\n"
+        
+        st.info("Copia el texto de abajo para imprimir o enviar a la impresora térmica.")
+        st.code(t, language=None)
     else:
         st.info("Selecciona grupos operativos para generar la lista.")
 
 elif st.session_state.pagina == "ListaCompra":
-    st.title("🛒 Logística: Ticket de Compra")
+    st.title("🛒 Ticket de Compra (58mm)")
     u_sel = st.radio("Generar orden para:", ["Noble", "Coffee Station"], horizontal=True)
     
     df_actual = obtener_ultimo_inventario(df_historial, u_sel)
@@ -584,10 +591,12 @@ elif st.session_state.pagina == "ListaCompra":
             t += f"Fecha: {datetime.now().strftime('%d/%m/%Y')}\n"
             t += "-"*22 + "\n"
             for _, r in com.iterrows():
-                t += f"• {str(r['Nombre del Insumo'])[:18]}\n"
-                t += f"  Hay: {r['Stock Neto Calculado']} | Min: {r['Stock Mínimo']}\n\n"
-            t += "-"*22 + "\n"
-            st.text_area("Formato Térmico (58mm):", value=t, height=450)
+                t += f"• {str(r['Nombre del Insumo'])[:20]}\n"
+                t += f"  Stock: {r['Stock Neto Calculado']} / Min: {r['Stock Mínimo']}\n"
+                t += "-"*22 + "\n"
+            
+            st.info("Copia el texto de abajo para imprimir o enviar a la impresora térmica.")
+            st.code(t, language=None)
         else: 
             st.success("No se han disparado alertas de reabastecimiento.")
     else:
