@@ -159,6 +159,7 @@ with st.sidebar:
     st.write("**🖨️ Tickets (58mm):**")
     if st.button("📋 1. Lista de Conteo", use_container_width=True): cambiar_pagina("Impresion")
     if st.button("🛒 2. Lista de Compra", use_container_width=True): cambiar_pagina("ListaCompra")
+    if st.button("📦 3. Reporte de Stock", use_container_width=True): cambiar_pagina("ReporteStock")
     
     st.divider()
     with st.expander("👤 Equipo de Barra"):
@@ -553,6 +554,16 @@ elif st.session_state.pagina == "Consulta":
             return ['background-color: rgba(255, 75, 75, 0.2)' if (s['Stock Total'] < s['Mínimo']) else '' for _ in s]
 
         st.dataframe(df_final.style.apply(highlight_low_stock, axis=1), use_container_width=True, hide_index=True)
+        
+        st.divider()
+        csv = df_final.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Descargar Reporte (CSV)",
+            data=csv,
+            file_name=f"Inventario_{u_sel}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
     else:
         st.warning("No hay registros en la base de datos para ejecutar la auditoría.")
 
@@ -601,3 +612,31 @@ elif st.session_state.pagina == "ListaCompra":
             st.success("No se han disparado alertas de reabastecimiento.")
     else:
         st.info("Sin registros suficientes para armar la logística de compra.")
+
+elif st.session_state.pagina == "ReporteStock":
+    st.title("📦 Reporte de Stock (58mm)")
+    u_sel = st.radio("Generar reporte para:", ["Noble", "Coffee Station"], horizontal=True)
+    
+    df_actual = obtener_ultimo_inventario(df_historial, u_sel)
+    if not df_actual.empty:
+        t = f"*** INVENTARIO {u_sel.upper()} ***\n"
+        t += f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
+        t += "-"*22 + "\n"
+        
+        df_rep = df_actual.sort_values(["Grupo_H", "Nombre del Insumo"])
+        
+        grupo_actual = ""
+        for _, r in df_rep.iterrows():
+            grupo = str(r['Grupo_H'])
+            if grupo != grupo_actual:
+                t += f"\n>> GRUPO {grupo} <<\n"
+                grupo_actual = grupo
+                
+            t += f"{str(r['Nombre del Insumo'])[:20]}\n"
+            t += f" Alm:{r['Alm']} Bar:{r['Barra']} Total:{r['Stock Neto Calculado']}\n"
+        t += "-"*22 + "\n"
+        
+        st.info("Copia el texto de abajo para imprimir o enviar a la impresora térmica.")
+        st.code(t, language=None)
+    else:
+        st.warning("No hay registros en la base de datos para generar el reporte.")
