@@ -93,9 +93,11 @@ def cargar_datos_integrales():
         df_ins = normalizar_dataframe(df_ins, cols_insumos)
         df_his = normalizar_dataframe(df_his, cols_historial)
         
-        # Parseo seguro de fechas para ordenamiento cronológico
+        # Parseo seguro de fechas para ordenamiento cronológico. 
+        # Espacio_H (F) = Inventario, Fecha de Inventario (O) = Ingresos
         if not df_his.empty:
             df_his['Fecha de Inventario'] = pd.to_datetime(df_his['Fecha de Inventario'], errors='coerce')
+            df_his['Espacio_H'] = pd.to_datetime(df_his['Espacio_H'], errors='coerce')
             
         return df_ins, df_his
         
@@ -116,6 +118,9 @@ def obtener_ultimo_inventario(df_hist, unidad=None):
         df_u = df_u[df_u['Unidad de Negocio'] == unidad]
         
     if df_u.empty: return pd.DataFrame()
+    
+    # UNIFICACIÓN DE FECHAS: Toma la fecha de Col O (Ingresos), y si está vacía usa Col F (Inventarios)
+    df_u['Fecha de Inventario'] = df_u['Fecha de Inventario'].combine_first(df_u['Espacio_H'])
     
     # Ordenar cronológicamente y mantener solo el registro más reciente por Insumo y Unidad
     df_actual = df_u.sort_values('Fecha de Inventario', ascending=True, na_position='first').drop_duplicates(subset=['Unidad de Negocio', 'Nombre del Insumo'], keep='last').copy()
@@ -174,7 +179,7 @@ with st.sidebar:
             p = st.text_input("Proveedor")
             g = st.selectbox("Grupo", ["A", "B", "C", "D", "E", "F"])
             uc = st.text_input("Presentación de Compra")
-            um = st.selectbox("Unidad de Medida", ["pz", "ml", "gr", "%", "kg", "lt"])
+            um = st.selectbox("Unidad de Medida", ["pz", "ml", "gr", "kg", "lt"])
             sm = st.number_input("Stock Mínimo", min_value=0.0)
             
             if st.form_submit_button("✨ Crear Insumo"):
@@ -205,7 +210,7 @@ with st.sidebar:
                 
                 e_uc = st.text_input("Presentación Compra", value=str(d.get("Presentación de Compra", "")))
                 
-                list_u = ["pz", "ml", "gr", "%", "kg", "lt"]
+                list_u = ["pz", "ml", "gr", "kg", "lt"]
                 u_val = str(d.get("Unidad de Medida", "pz")).lower()
                 e_um = st.selectbox("Medida", list_u, index=list_u.index(u_val) if u_val in list_u else 0)
                 
@@ -262,7 +267,10 @@ if st.session_state.pagina == "Dashboard":
         
         st.divider()
         st.subheader("🕒 Actividad Reciente (Logs)")
-        logs_mostrar = df_historial.dropna(subset=['Fecha de Inventario']).sort_values('Fecha de Inventario', ascending=False)
+        # Para el display de logs del dashboard, rellenamos Fecha de Inventario unificada
+        df_log_display = df_historial.copy()
+        df_log_display['Fecha de Inventario'] = df_log_display['Fecha de Inventario'].combine_first(df_log_display['Espacio_H'])
+        logs_mostrar = df_log_display.dropna(subset=['Fecha de Inventario']).sort_values('Fecha de Inventario', ascending=False)
         st.dataframe(logs_mostrar[['Fecha de Inventario', 'Responsable', 'Unidad de Negocio', 'Nombre del Insumo', 'Stock Neto', 'Necesita Compra']].head(15), use_container_width=True)
     else: 
         st.info("Sin datos históricos. Ejecuta el primer conteo de inventario.")
@@ -315,10 +323,10 @@ elif st.session_state.pagina == "Inventario":
                     st.markdown(f"<small>Anterior: {v_prev} | Mín: {v_min} (<span style='color:{color}'>{diff:+.1f}</span>)</small>", unsafe_allow_html=True)
                 
                 with c2: v_a = st.number_input("Alm", min_value=0.0, step=1.0, key=f"a_{i}", label_visibility="collapsed")
-                with c3: v_b = st.number_input("Bar", min_value=0.0, step=0.1, key=f"b_{i}", label_visibility="collapsed")
+                with c3: v_b = st.number_input("Bar", min_value=0.0, step=1.0, key=f"b_{i}", label_visibility="collapsed")
                 
                 with c4:
-                    u_list = ["pz", "ml", "gr", "%", "kg", "lt"]
+                    u_list = ["pz", "ml", "gr", "kg", "lt"]
                     u_act = str(row.get("Unidad de Medida","pz")).lower()
                     v_u = st.selectbox("U", u_list, index=u_list.index(u_act) if u_act in u_list else 0, key=f"u_{i}", label_visibility="collapsed")
                 
@@ -338,10 +346,11 @@ elif st.session_state.pagina == "Inventario":
             fh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for n, info in regs.items():
                 dm = info["row"]
+                # CAPTURA DE INVENTARIO: La fecha de registro viaja en la Columna F (Índice 5) y la O (Índice 14) va en blanco.
                 filas.append([
-                    u_sel, n, dm.get('Marca',''), dm.get('Proveedor',''), dm.get('Grupo',''), "", 
+                    u_sel, n, dm.get('Marca',''), dm.get('Proveedor',''), dm.get('Grupo',''), fh, 
                     dm.get('Presentación de Compra',''), info["u"], info["a"], info["b"], 
-                    info["n"], dm.get('Stock Mínimo',0), "TRUE" if info["p"] else "FALSE", r_sel, fh
+                    info["n"], dm.get('Stock Mínimo',0), "TRUE" if info["p"] else "FALSE", r_sel, ""
                 ])
             try:
                 sh.worksheet("Historial").append_rows(filas)
@@ -363,24 +372,19 @@ elif st.session_state.pagina == "Ingresos":
     df_u = df_raw[df_raw["Unidad de Negocio"] == u_sel] if not df_raw.empty else pd.DataFrame()
     
     if not df_u.empty:
+        df_actual = obtener_ultimo_inventario(df_historial, u_sel)
         nombres_insumos = df_u["Nombre del Insumo"].dropna().unique().tolist()
-        insumos_llegados = st.multiselect("🔍 Selecciona insumos que llegaron:", sorted(nombres_insumos))
         
-        if insumos_llegados:
-            df_actual = obtener_ultimo_inventario(df_historial, u_sel)
-            regs_ingreso = {}
-            st.divider()
+        st.divider()
+        modo_bulk = st.toggle("🚀 Activar Ingreso Masivo Rápido (Bulk)")
+        
+        if modo_bulk:
+            st.subheader("Carga Bulk")
+            st.caption("Escribe directamente las cantidades en la columna '+ Ingreso' para todos los insumos correspondientes.")
             
-            h1, h2, h3, h4 = st.columns([3, 2, 2, 2])
-            with h1: st.write("**Insumo**")
-            with h2: st.write("**Stock Anterior (Alm+Bar)**")
-            with h3: st.write("**+ Cantidad Ingresada**")
-            with h4: st.write("**= Nuevo Stock Total**")
-            st.divider()
-
-            for i, nom in enumerate(insumos_llegados):
-                row_insumo = df_u[df_u["Nombre del Insumo"] == nom].iloc[0]
-                
+            bulk_data = []
+            for _, r in df_u.iterrows():
+                nom = r['Nombre del Insumo']
                 v_a_prev, v_b_prev = 0.0, 0.0
                 if not df_actual.empty:
                     m = df_actual[df_actual['Nombre del Insumo'] == nom]
@@ -388,52 +392,130 @@ elif st.session_state.pagina == "Ingresos":
                         v_a_prev = m.iloc[0]['Alm']
                         v_b_prev = m.iloc[0]['Barra']
                 
-                v_n_prev = v_a_prev + v_b_prev
-                v_min = limpiar_valor(row_insumo.get('Stock Mínimo', 0))
+                bulk_data.append({
+                    "Insumo": nom,
+                    "Stock Alm": v_a_prev,
+                    "Stock Barra": v_b_prev,
+                    "+ Ingreso": 0.0,
+                    "row_data": r
+                })
                 
-                with st.container():
-                    c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
-                    with c1: 
-                        st.write(f"**{nom}**")
-                        st.caption(f"Medida: {row_insumo.get('Unidad de Medida', 'pz')}")
-                    with c2: 
-                        st.write(f"Almacén: {v_a_prev} | Barra: {v_b_prev}")
-                        st.write(f"**Total Ant: {v_n_prev}**")
-                    with c3: 
-                        cant_ingreso = st.number_input("Ingreso a Almacén", min_value=0.0, step=1.0, key=f"ing_{i}", label_visibility="collapsed")
-                    with c4:
-                        nuevo_alm = v_a_prev + cant_ingreso
-                        nuevo_neto = nuevo_alm + v_b_prev
-                        st.success(f"**{nuevo_neto:.1f}**")
-                    
-                    regs_ingreso[nom] = {
-                        "nuevo_a": nuevo_alm, 
-                        "b": v_b_prev, 
-                        "nuevo_n": nuevo_neto, 
-                        "row": row_insumo,
-                        "min": v_min
-                    }
+            df_edit = pd.DataFrame(bulk_data)
+            edited_df = st.data_editor(
+                df_edit[['Insumo', 'Stock Alm', 'Stock Barra', '+ Ingreso']], 
+                hide_index=True, 
+                use_container_width=True,
+                disabled=['Insumo', 'Stock Alm', 'Stock Barra']
+            )
+            
+            if st.button("📦 EJECUTAR INGRESO BULK", type="primary"):
+                filas_bulk = []
+                fh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                for _, r_ed in edited_df.iterrows():
+                    ingreso = float(r_ed['+ Ingreso'])
+                    if ingreso > 0:
+                        nom = r_ed['Insumo']
+                        orig_data = next(item for item in bulk_data if item["Insumo"] == nom)
+                        row_insumo = orig_data["row_data"]
+                        
+                        v_a_prev = orig_data["Stock Alm"]
+                        v_b_prev = orig_data["Stock Barra"]
+                        v_min = limpiar_valor(row_insumo.get('Stock Mínimo', 0))
+                        
+                        nuevo_a = v_a_prev + ingreso
+                        nuevo_n = nuevo_a + v_b_prev
+                        necesita = "TRUE" if nuevo_n < v_min else "FALSE"
+                        
+                        # ENTRADA DE INSUMO: La columna F (Índice 5) va vacía, y la O (Índice 14) lleva la fecha de entrada.
+                        filas_bulk.append([
+                            u_sel, nom, row_insumo.get('Marca',''), row_insumo.get('Proveedor',''), row_insumo.get('Grupo',''), "", 
+                            row_insumo.get('Presentación de Compra',''), row_insumo.get('Unidad de Medida','pz'), 
+                            nuevo_a, v_b_prev, nuevo_n, v_min, necesita, r_sel, fh
+                        ])
+                
+                if filas_bulk:
+                    try:
+                        sh.worksheet("Historial").append_rows(filas_bulk)
+                        st.cache_data.clear()
+                        st.success(f"Ingreso masivo de {len(filas_bulk)} referencias registrado con éxito.")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Falla al registrar ingreso bulk: {e}")
+                else:
+                    st.warning("No registraste cantidades mayores a 0 en la cuadrícula.")
+        
+        else:
+            insumos_llegados = st.multiselect("🔍 Selecciona insumos individuales que llegaron:", sorted(nombres_insumos))
+            if insumos_llegados:
+                regs_ingreso = {}
+                st.divider()
+                
+                h1, h2, h3, h4 = st.columns([3, 2, 2, 2])
+                with h1: st.write("**Insumo**")
+                with h2: st.write("**Stock Anterior (Alm+Bar)**")
+                with h3: st.write("**+ Cantidad Ingresada**")
+                with h4: st.write("**= Nuevo Stock Total**")
                 st.divider()
 
-            if st.button("📦 EJECUTAR INGRESO", use_container_width=True, type="primary"):
-                filas = []
-                fh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                for n, info in regs_ingreso.items():
-                    dm = info["row"]
-                    necesita = "TRUE" if info["nuevo_n"] < info["min"] else "FALSE"
-                    filas.append([
-                        u_sel, n, dm.get('Marca',''), dm.get('Proveedor',''), dm.get('Grupo',''), "", 
-                        dm.get('Presentación de Compra',''), dm.get('Unidad de Medida','pz'), 
-                        info["nuevo_a"], info["b"], info["nuevo_n"], info["min"], necesita, r_sel, fh
-                    ])
-                try:
-                    sh.worksheet("Historial").append_rows(filas)
-                    st.cache_data.clear()
-                    st.success("Ingreso registrado de manera exitosa.")
-                    time.sleep(0.5)
-                    st.rerun() 
-                except Exception as e:
-                    st.error(f"Falla al registrar ingresos: {e}")
+                for i, nom in enumerate(insumos_llegados):
+                    row_insumo = df_u[df_u["Nombre del Insumo"] == nom].iloc[0]
+                    
+                    v_a_prev, v_b_prev = 0.0, 0.0
+                    if not df_actual.empty:
+                        m = df_actual[df_actual['Nombre del Insumo'] == nom]
+                        if not m.empty:
+                            v_a_prev = m.iloc[0]['Alm']
+                            v_b_prev = m.iloc[0]['Barra']
+                    
+                    v_n_prev = v_a_prev + v_b_prev
+                    v_min = limpiar_valor(row_insumo.get('Stock Mínimo', 0))
+                    
+                    with st.container():
+                        c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
+                        with c1: 
+                            st.write(f"**{nom}**")
+                            st.caption(f"Medida: {row_insumo.get('Unidad de Medida', 'pz')}")
+                        with c2: 
+                            st.write(f"Almacén: {v_a_prev} | Barra: {v_b_prev}")
+                            st.write(f"**Total Ant: {v_n_prev}**")
+                        with c3: 
+                            cant_ingreso = st.number_input("Ingreso a Almacén", min_value=0.0, step=1.0, key=f"ing_{i}", label_visibility="collapsed")
+                        with c4:
+                            nuevo_alm = v_a_prev + cant_ingreso
+                            nuevo_neto = nuevo_alm + v_b_prev
+                            st.success(f"**{nuevo_neto:.1f}**")
+                        
+                        regs_ingreso[nom] = {
+                            "nuevo_a": nuevo_alm, 
+                            "b": v_b_prev, 
+                            "nuevo_n": nuevo_neto, 
+                            "row": row_insumo,
+                            "min": v_min
+                        }
+                    st.divider()
+
+                if st.button("📦 EJECUTAR INGRESO", use_container_width=True, type="primary"):
+                    filas = []
+                    fh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    for n, info in regs_ingreso.items():
+                        dm = info["row"]
+                        necesita = "TRUE" if info["nuevo_n"] < info["min"] else "FALSE"
+                        
+                        # ENTRADA DE INSUMO: La columna F (Índice 5) va vacía, y la O (Índice 14) lleva la fecha de entrada.
+                        filas.append([
+                            u_sel, n, dm.get('Marca',''), dm.get('Proveedor',''), dm.get('Grupo',''), "", 
+                            dm.get('Presentación de Compra',''), dm.get('Unidad de Medida','pz'), 
+                            info["nuevo_a"], info["b"], info["nuevo_n"], info["min"], necesita, r_sel, fh
+                        ])
+                    try:
+                        sh.worksheet("Historial").append_rows(filas)
+                        st.cache_data.clear()
+                        st.success("Ingreso registrado de manera exitosa.")
+                        time.sleep(0.5)
+                        st.rerun() 
+                    except Exception as e:
+                        st.error(f"Falla al registrar ingresos: {e}")
 
 elif st.session_state.pagina == "Consulta":
     st.title("📦 Auditoría de Inventario Actual")
