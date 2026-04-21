@@ -73,6 +73,12 @@ def cargar_datos_integrales():
         val_ins = sh.worksheet("Insumos").get_all_values()
         val_his = sh.worksheet("Historial").get_all_values()
         
+        # Intentar cargar Cierres (Snapshot inicial)
+        try:
+            val_cie = sh.worksheet("Cierres").get_all_values()
+        except:
+            val_cie = []
+        
         if len(val_ins) > 1:
             df_ins = pd.DataFrame(val_ins[1:], columns=val_ins[0])
         else:
@@ -83,23 +89,34 @@ def cargar_datos_integrales():
         else:
             df_his = pd.DataFrame(columns=val_his[0] if val_his else [])
             
+        if len(val_cie) > 1:
+            df_cie = pd.DataFrame(val_cie[1:], columns=val_cie[0])
+        else:
+            df_cie = pd.DataFrame()
+            
         # ANCLA DE SEGURIDAD: Guardamos la fila real de Google Sheets antes de limpiar el DF
         df_ins['Sheet_Row_Num'] = df_ins.index + 2
         
-        # PLANTILLAS ESTRICTAS DE POSICIÓN (Basado en el orden exacto del append de la app)
+        # PLANTILLAS ESTRICTAS DE POSICIÓN
         cols_insumos = ['Unidad de Negocio', 'Nombre del Insumo', 'Marca', 'Proveedor', 'Grupo', 'Espacio_1', 'Presentación de Compra', 'Unidad de Medida', 'Espacio_2', 'Espacio_3', 'Espacio_4', 'Stock Mínimo']
-        # Extendemos a 16 columnas para incluir Comentarios (P)
         cols_historial = ['Unidad de Negocio', 'Nombre del Insumo', 'Marca_H', 'Proveedor_H', 'Grupo_H', 'Espacio_H', 'Pres_Compra_H', 'Unidad_Medida_H', 'Alm', 'Barra', 'Stock Neto', 'Stock Mínimo', 'Necesita Compra', 'Responsable', 'Fecha de Inventario', 'Comentarios']
         
         df_ins = normalizar_dataframe(df_ins, cols_insumos)
         df_his = normalizar_dataframe(df_his, cols_historial)
         
+        # Si hay cierres, unirlos al historial para tener la base completa
+        if not df_cie.empty:
+            df_cie = normalizar_dataframe(df_cie, cols_historial)
+            df_total_his = pd.concat([df_cie, df_his], ignore_index=True)
+        else:
+            df_total_his = df_his
+        
         # Parseo seguro de fechas para ordenamiento cronológico. 
-        if not df_his.empty:
-            df_his['Fecha de Inventario'] = pd.to_datetime(df_his['Fecha de Inventario'], errors='coerce')
-            df_his['Espacio_H'] = pd.to_datetime(df_his['Espacio_H'], errors='coerce')
+        if not df_total_his.empty:
+            df_total_his['Fecha de Inventario'] = pd.to_datetime(df_total_his['Fecha de Inventario'], errors='coerce')
+            df_total_his['Espacio_H'] = pd.to_datetime(df_total_his['Espacio_H'], errors='coerce')
             
-        return df_ins, df_his
+        return df_ins, df_total_his
         
     except Exception as e:
         st.error(f"Falla en la extracción de datos: {e}")
@@ -160,6 +177,10 @@ with st.sidebar:
     if st.button("📋 1. Lista de Conteo", use_container_width=True): cambiar_pagina("Impresion")
     if st.button("🛒 2. Lista de Compra", use_container_width=True): cambiar_pagina("ListaCompra")
     if st.button("📦 3. Reporte de Stock", use_container_width=True): cambiar_pagina("ReporteStock")
+    
+    st.divider()
+    st.write("**🛠️ Administración:**")
+    if st.button("🔒 Corte de Mes", use_container_width=True): cambiar_pagina("CorteMes")
     
     st.divider()
     with st.expander("👤 Equipo de Barra"):
@@ -351,7 +372,6 @@ elif st.session_state.pagina == "Inventario":
             for n, info in regs.items():
                 dm = info["row"]
                 # CAPTURA DE INVENTARIO: La fecha viaja en la Columna O (Índice 14), y la F (Índice 5) va en blanco.
-                # Columna P (Índice 15) para Comentarios.
                 filas.append([
                     u_sel, n, dm.get('Marca',''), dm.get('Proveedor',''), dm.get('Grupo',''), "", 
                     dm.get('Presentación de Compra',''), info["u"], info["a"], info["b"], 
@@ -431,7 +451,7 @@ elif st.session_state.pagina == "Ingresos":
                         nuevo_n = nuevo_a + v_b_prev
                         necesita = "TRUE" if nuevo_n < v_min else "FALSE"
                         
-                        # ENTRADA DE INSUMO: Columna F (Índice 5) fecha, O (Índice 14) vacía, P (Índice 15) vacía.
+                        # ENTRADA DE INSUMO: Columna F fecha, O vacía, P vacía.
                         filas_bulk.append([
                             u_sel, nom, row_insumo.get('Marca',''), row_insumo.get('Proveedor',''), row_insumo.get('Grupo',''), fh, 
                             row_insumo.get('Presentación de Compra',''), row_insumo.get('Unidad de Medida','pz'), 
@@ -640,3 +660,70 @@ elif st.session_state.pagina == "ReporteStock":
         st.code(t, language=None)
     else:
         st.warning("No hay registros en la base de datos para generar el reporte.")
+
+elif st.session_state.pagina == "CorteMes":
+    st.title("🔒 Sistema de Corte de Mes")
+    st.warning("Atención: Este proceso consolidará el stock actual como 'Saldo Inicial' y archivará los registros previos para optimizar el rendimiento de la aplicación.")
+    
+    if st.button("🚀 Ejecutar Cierre y Optimizar Historial"):
+        with st.status("Ejecutando protocolo de cierre...", expanded=True) as status:
+            try:
+                # 1. Calcular Foto Actual
+                st.write("Calculando estados finales de stock...")
+                df_corte = obtener_ultimo_inventario(df_historial)
+                
+                if df_corte.empty:
+                    st.error("No hay datos para cerrar.")
+                else:
+                    # 2. Preparar datos para 'Cierres' y 'Archivo_Historial'
+                    fh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    # Preparar filas para la hoja 'Cierres' (Índices idénticos al Historial)
+                    filas_corte = []
+                    for _, r in df_corte.iterrows():
+                        filas_corte.append([
+                            r['Unidad de Negocio'], r['Nombre del Insumo'], r['Marca_H'], r['Proveedor_H'], r['Grupo_H'], 
+                            "", r['Pres_Compra_H'], r['Unidad_Medida_H'], r['Alm'], r['Barra'], 
+                            r['Stock Neto Calculado'], r['Stock Mínimo'], "TRUE" if r['Necesita Compra'] else "FALSE", 
+                            "SISTEMA-CIERRE", fh, "Corte consolidado"
+                        ])
+                    
+                    # 3. Mover Historial a Archivo
+                    st.write("Archivando historial de movimientos...")
+                    ws_hist = sh.worksheet("Historial")
+                    datos_hist = ws_hist.get_all_values()
+                    
+                    if len(datos_hist) > 1:
+                        try:
+                            ws_arc = sh.worksheet("Archivo_Historial")
+                        except:
+                            ws_arc = sh.add_worksheet(title="Archivo_Historial", rows="1000", cols="20")
+                            ws_arc.append_row(datos_hist[0]) # Encabezados
+                        
+                        ws_arc.append_rows(datos_hist[1:])
+                    
+                    # 4. Limpiar Historial y Escribir Snapshot en Cierres
+                    st.write("Consolidando saldos iniciales...")
+                    
+                    # Sobrescribir Cierres con el nuevo Snapshot (Borrar anteriores para que no se dupliquen)
+                    try:
+                        ws_cie = sh.worksheet("Cierres")
+                        ws_cie.clear()
+                    except:
+                        ws_cie = sh.add_worksheet(title="Cierres", rows="1000", cols="20")
+                    
+                    encabezados = ['Unidad de Negocio', 'Nombre del Insumo', 'Marca_H', 'Proveedor_H', 'Grupo_H', 'Espacio_H', 'Pres_Compra_H', 'Unidad_Medida_H', 'Alm', 'Barra', 'Stock Neto', 'Stock Mínimo', 'Necesita Compra', 'Responsable', 'Fecha de Inventario', 'Comentarios']
+                    ws_cie.append_row(encabezados)
+                    ws_cie.append_rows(filas_corte)
+                    
+                    # Limpiar el historial principal
+                    ws_hist.clear()
+                    ws_hist.append_row(encabezados)
+                    
+                    st.cache_data.clear()
+                    status.update(label="✅ Corte completado exitosamente", state="complete")
+                    st.success("La base de datos ha sido optimizada. El historial previo se encuentra en la pestaña 'Archivo_Historial'.")
+                    time.sleep(2)
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Falla crítica en el protocolo de cierre: {e}")
