@@ -152,7 +152,6 @@ def obtener_ultimo_inventario(df_hist, unidad=None):
         
     df_actual['Stock Neto Calculado'] = df_actual['Alm'] + df_actual['Barra']
     
-    # Privilegiar criterio humano: Lee la decisión explícita de compra si existe, si no, usa matemática
     if 'Necesita Compra' in df_actual.columns:
         df_actual['Necesita Compra'] = df_actual['Necesita Compra'].astype(str).str.strip().str.upper() == 'TRUE'
     else:
@@ -170,7 +169,6 @@ if "user_role" not in st.session_state:
 if "pagina" not in st.session_state: 
     st.session_state.pagina = "Dashboard"
 
-# Inyectar lista de responsables dinámicamente
 st.session_state.responsables = LISTA_RESPONSABLES if LISTA_RESPONSABLES else ["Raúl"]
 
 def cambiar_pagina(nombre):
@@ -218,6 +216,24 @@ with st.sidebar:
     if st.button("📋 1. Lista de Conteo", use_container_width=True): cambiar_pagina("Impresion")
     if st.button("🛒 2. Lista de Compra", use_container_width=True): cambiar_pagina("ListaCompra")
     if st.button("📦 3. Reporte de Stock", use_container_width=True): cambiar_pagina("ReporteStock")
+    
+    # --- NUEVA LÓGICA DE INFORMACIÓN: GUÍA DE GRUPOS ---
+    st.divider()
+    with st.expander("ℹ️ Guía de Clasificación (Grupos)"):
+        st.markdown("""
+        **SISTEMA DE INVENTARIO LOGÍSTICO**
+        
+        **Rutina Diaria (Perecederos):**
+        * **Grupo A:** Café, Leches y Lácteos
+        * **Grupo B:** Jarabes y Salsas
+        * **Grupo C:** Polvos, Tés y Tisanas
+        
+        **Rutina 2 Días (Secos y Suministros):**
+        * **Grupo D:** Empaques y Desechables
+        * **Grupo E:** Suministros de Limpieza
+        * **Grupo F:** Comida y Vitrina
+        * **Grupo G:** Otros (Retail / Utensilios)
+        """)
     
     # --- ZONA DE ADMINISTRADOR ---
     if st.session_state.user_role == "admin":
@@ -270,7 +286,7 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"Error: {e}")
 
-    # --- ZONA DE CATÁLOGO (Disponible para todos los usuarios con sesión iniciada) ---
+    # --- ZONA DE CATÁLOGO ---
     if st.session_state.auth_status:
         st.divider()
         st.subheader("🛠️ Gestión del Catálogo")
@@ -281,8 +297,8 @@ with st.sidebar:
                 u = st.selectbox("Unidad", ["Noble", "Coffee Station"])
                 n = st.text_input("Nombre del Insumo")
                 m = st.text_input("Marca")
-                p = st.text_input("Proveedor")
-                g = st.selectbox("Grupo", ["A", "B", "C", "D", "E", "F"])
+                p = text_input("Proveedor")
+                g = st.selectbox("Grupo", ["A", "B", "C", "D", "E", "F", "G"])
                 uc = st.text_input("Presentación de Compra")
                 um = st.selectbox("Unidad de Medida", ["pz", "ml", "gr", "kg", "lt"])
                 sm = st.number_input("Stock Mínimo", min_value=0.0)
@@ -311,7 +327,7 @@ with st.sidebar:
                     e_p = st.text_input("Proveedor", value=str(d.get("Proveedor", "")))
                     
                     grupo_val = str(d.get("Grupo", "A"))
-                    e_g = st.selectbox("Grupo", ["A","B","C","D","E","F"], index=["A","B","C","D","E","F"].index(grupo_val) if grupo_val in ["A","B","C","D","E","F"] else 0)
+                    e_g = st.selectbox("Grupo", ["A","B","C","D","E","F","G"], index=["A","B","C","D","E","F","G"].index(grupo_val) if grupo_val in ["A","B","C","D","E","F","G"] else 0)
                     
                     e_uc = st.text_input("Presentación Compra", value=str(d.get("Presentación de Compra", "")))
                     
@@ -406,7 +422,6 @@ elif st.session_state.pagina == "Inventario":
             g_sel = st.multiselect("📂 Grupos a contar", grps, default=grps[:1] if grps else [])
 
         st.divider()
-        # NUEVO: BARRA DE BÚSQUEDA
         busqueda_inv = st.text_input("🔍 Buscar insumo específico para contar:", placeholder="Escribe el nombre del insumo...")
 
         df_actual = obtener_ultimo_inventario(df_historial, u_sel)
@@ -429,7 +444,6 @@ elif st.session_state.pagina == "Inventario":
 
             for _, row in df_f.iterrows():
                 nom = str(row.get('Nombre del Insumo', ''))
-                # Llavero seguro para que la búsqueda en vivo no mezcle variables de estado
                 safe_nom = nom.replace(" ", "_").replace('"', '') 
                 v_prev = 0.0
                 
@@ -466,7 +480,6 @@ elif st.session_state.pagina == "Inventario":
                         manual_key = f"m_{safe_nom}"
                         last_math_key = f"lm_{safe_nom}"
                         
-                        # Manejo quirúrgico del estado del botón ¿Pedir?
                         if manual_key not in st.session_state: st.session_state[manual_key] = None
                         if last_math_key not in st.session_state: st.session_state[last_math_key] = None
                         
