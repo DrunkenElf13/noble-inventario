@@ -3,6 +3,7 @@ from google.oauth2.service_account import Credentials
 import gspread
 import pandas as pd
 from datetime import datetime
+import time
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Noble & Coffee Station", page_icon="☕", layout="wide")
@@ -43,7 +44,7 @@ def normalizar_dataframe(df, columnas_esperadas):
     # 1. Limpiar nombres de columnas (elimina espacios ocultos al inicio o final)
     df.columns = df.columns.str.strip()
     
-    # 2. Inyectar columnas faltantes para evitar KeyErrors
+    # 2. Inyectar columnas faltantes para evitar KeyErrors silenciosos
     for col in columnas_esperadas:
         if col not in df.columns:
             df[col] = None 
@@ -69,7 +70,7 @@ def cargar_datos_integrales():
         df_ins = normalizar_dataframe(df_ins, cols_insumos)
         df_his = normalizar_dataframe(df_his, cols_historial)
         
-        # Parseo seguro de fechas
+        # Parseo seguro de fechas para ordenamiento cronológico
         if not df_his.empty:
             df_his['Fecha de Inventario'] = pd.to_datetime(df_his['Fecha de Inventario'], errors='coerce')
             
@@ -96,7 +97,7 @@ def obtener_ultimo_inventario(df_hist, unidad=None):
     # Ordenar cronológicamente y mantener solo el registro más reciente por Insumo y Unidad
     df_actual = df_u.sort_values('Fecha de Inventario', ascending=True).drop_duplicates(subset=['Unidad de Negocio', 'Nombre del Insumo'], keep='last').copy()
     
-    # Estandarización matemática
+    # Estandarización matemática estricta
     for col in ['Alm', 'Barra', 'Stock Neto', 'Stock Mínimo']:
         df_actual[col] = df_actual[col].apply(limpiar_valor)
         
@@ -154,12 +155,15 @@ with st.sidebar:
             sm = st.number_input("Stock Mínimo", min_value=0.0)
             
             if st.form_submit_button("✨ Crear Insumo"):
-                # Columnas asumidas por el layout base. Mantener estructura rígida.
-                nueva_fila = [u, n, m, p, g, "", uc, um, "", "", "", sm]
-                sh.worksheet("Insumos").append_row(nueva_fila)
-                st.cache_data.clear()
-                st.success(f"Insumo '{n}' integrado al sistema.")
-                st.rerun()
+                try:
+                    nueva_fila = [u, n, m, p, g, "", uc, um, "", "", "", sm]
+                    sh.worksheet("Insumos").append_row(nueva_fila)
+                    st.cache_data.clear()
+                    st.success(f"Insumo '{n}' integrado al sistema.")
+                    time.sleep(1) # Breve pausa para ux
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al conectar con la base maestra: {e}")
                 
     elif not df_raw.empty and "Nombre del Insumo" in df_raw.columns:
         ins_nombres = df_raw["Nombre del Insumo"].dropna().unique().tolist()
@@ -185,13 +189,16 @@ with st.sidebar:
                 e_sm = st.number_input("Stock Mínimo", value=limpiar_valor(d.get("Stock Mínimo", 0)))
                 
                 if st.form_submit_button("💾 Actualizar Insumo"):
-                    # +2 porque pandas usa índice 0 (que es fila 2 en sheets contando el encabezado)
-                    idx = df_raw[df_raw["Nombre del Insumo"] == ins_edit].index[0] + 2
-                    fila_act = [[e_u, e_n, e_m, e_p, e_g, "", e_uc, e_um, "", "", "", e_sm]]
-                    sh.worksheet("Insumos").update(range_name=f'A{idx}:L{idx}', values=fila_act)
-                    st.cache_data.clear()
-                    st.success("Catálogo sincronizado.")
-                    st.rerun()
+                    try:
+                        idx = df_raw[df_raw["Nombre del Insumo"] == ins_edit].index[0] + 2
+                        fila_act = [[e_u, e_n, e_m, e_p, e_g, "", e_uc, e_um, "", "", "", e_sm]]
+                        sh.worksheet("Insumos").update(range_name=f'A{idx}:L{idx}', values=fila_act)
+                        st.cache_data.clear()
+                        st.success("Catálogo sincronizado.")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al sincronizar catálogo: {e}")
 
 # --- 6. VISTAS PRINCIPALES ---
 
@@ -307,7 +314,6 @@ elif st.session_state.pagina == "Inventario":
             fh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for n, info in regs.items():
                 dm = info["row"]
-                # Se mantiene la estructura exacta de columnas del Historial
                 filas.append([
                     u_sel, n, dm.get('Marca',''), dm.get('Proveedor',''), dm.get('Grupo',''), "", 
                     dm.get('Presentación de Compra',''), info["u"], info["a"], info["b"], 
@@ -317,6 +323,8 @@ elif st.session_state.pagina == "Inventario":
                 sh.worksheet("Historial").append_rows(filas)
                 st.cache_data.clear()
                 st.success("¡Transacción exitosa! Inventario actualizado.")
+                time.sleep(0.5)
+                st.rerun() 
             except Exception as e:
                 st.error(f"Falla al escribir en base de datos: {e}")
 
@@ -398,6 +406,8 @@ elif st.session_state.pagina == "Ingresos":
                     sh.worksheet("Historial").append_rows(filas)
                     st.cache_data.clear()
                     st.success("Ingreso registrado de manera exitosa.")
+                    time.sleep(0.5)
+                    st.rerun() 
                 except Exception as e:
                     st.error(f"Falla al registrar ingresos: {e}")
 
