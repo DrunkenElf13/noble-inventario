@@ -238,11 +238,52 @@ def cargar_datos_integrales():
 
         return df_ins, df_total
 
-    except Exception as e:
+   except Exception as e:
         st.error(f"Falla en extracción de datos: {e}")
         return pd.DataFrame(), pd.DataFrame()
-        @st.cache_data(ttl=60)
+
+@st.cache_data(ttl=60)
 def obtener_usuarios():
+    """Carga Base de Accesos"""
+    if sh is None:
+        return {}, [], pd.DataFrame()
+        
+    ws, err = safe_worksheet(sh, "Accesos")
+    if err:
+        try:
+            ws = sh.add_worksheet(title="Accesos", rows="100", cols="3")
+            ws.append_row(COLS_ACCESOS)
+            ws.append_rows([
+                ["13070518", "Raúl",    "admin"],
+                ["987654",   "Jenny",   "barista"],
+                ["ilecara",  "Araceli", "barista"],
+            ])
+        except Exception as e:
+            st.warning(f"No se pudo crear hoja Accesos: {e}")
+            return {}, [], pd.DataFrame()
+
+    try:
+        data = ws.get_all_values()
+        if len(data) < 2:
+            return {}, [], pd.DataFrame()
+            
+        df_usr = pd.DataFrame(data[1:], columns=data[0])
+        for col in COLS_ACCESOS:
+            if col not in df_usr.columns:
+                df_usr[col] = ""
+                
+        usuarios_dict = {
+            str(r["Clave"]): {"nombre": str(r["Nombre"]), "rol": str(r["Rol"])}
+            for _, r in df_usr.iterrows() if str(r.get("Clave", "")).strip()
+        }
+        lista_nombres = df_usr["Nombre"].dropna().tolist()
+        
+        return usuarios_dict, lista_nombres, df_usr
+    except Exception as e:
+        st.warning(f"Error cargando usuarios: {e}")
+        return {}, [], pd.DataFrame()
+
+USUARIOS_PIN, LISTA_RESPONSABLES, DF_USUARIOS = obtener_usuarios()
     """Carga Base de Accesos"""
     if sh is None:
         return {}, [], pd.DataFrame()
