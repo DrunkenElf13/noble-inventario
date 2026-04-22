@@ -286,6 +286,37 @@ def cargar_datos_integrales():
                 df_total["Espacio_H"], errors="coerce"
             )
 
+            # ── ENRIQUECIMIENTO DE STOCK MÍNIMO ──────────────────────────────
+            # El historial guarda Stock Mínimo en col L, pero si el encabezado
+            # del Sheet no coincide exactamente, llega en None/vacío.
+            # Aquí lo reforzamos desde la hoja Insumos (fuente maestra).
+            # Si el historial ya traía un valor válido (>0), se conserva.
+            # Si llega en 0 o vacío, se sustituye con el de Insumos.
+            if not df_ins.empty and "Stock Mínimo" in df_ins.columns:
+                df_ins_lookup = df_ins[
+                    ["Nombre del Insumo", "Unidad de Negocio", "Stock Mínimo"]
+                ].copy()
+                df_ins_lookup["_nom_norm"] = df_ins_lookup["Nombre del Insumo"].apply(
+                    normalizar_nombre
+                )
+                df_ins_lookup["_min_ins"] = df_ins_lookup["Stock Mínimo"].apply(limpiar_valor)
+                lookup_dict = {
+                    (row["Unidad de Negocio"], row["_nom_norm"]): row["_min_ins"]
+                    for _, row in df_ins_lookup.iterrows()
+                }
+                df_total["_nom_norm"] = df_total["Nombre del Insumo"].apply(normalizar_nombre)
+                df_total["Stock Mínimo"] = df_total.apply(
+                    lambda r: (
+                        limpiar_valor(r.get("Stock Mínimo"))
+                        or lookup_dict.get(
+                            (r.get("Unidad de Negocio", ""), r["_nom_norm"]), 0.0
+                        )
+                    ),
+                    axis=1,
+                )
+                df_total.drop(columns=["_nom_norm"], inplace=True, errors="ignore")
+            # ─────────────────────────────────────────────────────────────────
+
         return df_ins, df_total
 
     except Exception as e:
