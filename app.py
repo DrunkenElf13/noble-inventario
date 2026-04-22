@@ -292,28 +292,49 @@ def cargar_datos_integrales():
             # Aquí lo reforzamos desde la hoja Insumos (fuente maestra).
             # Si el historial ya traía un valor válido (>0), se conserva.
             # Si llega en 0 o vacío, se sustituye con el de Insumos.
-            if not df_ins.empty and "Stock Mínimo" in df_ins.columns:
-                df_ins_lookup = df_ins[
-                    ["Nombre del Insumo", "Unidad de Negocio", "Stock Mínimo"]
-                ].copy()
-                df_ins_lookup["_nom_norm"] = df_ins_lookup["Nombre del Insumo"].apply(
-                    normalizar_nombre
-                )
-                df_ins_lookup["_min_ins"] = df_ins_lookup["Stock Mínimo"].apply(limpiar_valor)
-                lookup_dict = {
-                    (row["Unidad de Negocio"], row["_nom_norm"]): row["_min_ins"]
-                    for _, row in df_ins_lookup.iterrows()
-                }
+            if not df_ins.empty:
+                # Construir lookup por (Unidad, nombre_normalizado)
+                df_ins_lk = df_ins.copy()
+                df_ins_lk["_nom_norm"] = df_ins_lk["Nombre del Insumo"].apply(normalizar_nombre)
+
+                lk_min   = {}
+                lk_marca = {}
+                lk_prov  = {}
+                for _, row in df_ins_lk.iterrows():
+                    k = (row.get("Unidad de Negocio", ""), row["_nom_norm"])
+                    lk_min[k]   = limpiar_valor(row.get("Stock Mínimo", 0))
+                    lk_marca[k] = str(row.get("Marca", "")).strip()
+                    lk_prov[k]  = str(row.get("Proveedor", "")).strip()
+
                 df_total["_nom_norm"] = df_total["Nombre del Insumo"].apply(normalizar_nombre)
+
+                # Stock Mínimo: tomar del historial si >0, sino del maestro
                 df_total["Stock Mínimo"] = df_total.apply(
                     lambda r: (
                         limpiar_valor(r.get("Stock Mínimo"))
-                        or lookup_dict.get(
-                            (r.get("Unidad de Negocio", ""), r["_nom_norm"]), 0.0
-                        )
+                        or lk_min.get((r.get("Unidad de Negocio", ""), r["_nom_norm"]), 0.0)
                     ),
                     axis=1,
                 )
+
+                # Marca_H: rellenar solo si viene vacía
+                df_total["Marca_H"] = df_total.apply(
+                    lambda r: (
+                        str(r.get("Marca_H", "")).strip()
+                        or lk_marca.get((r.get("Unidad de Negocio", ""), r["_nom_norm"]), "")
+                    ),
+                    axis=1,
+                )
+
+                # Proveedor_H: rellenar solo si viene vacío
+                df_total["Proveedor_H"] = df_total.apply(
+                    lambda r: (
+                        str(r.get("Proveedor_H", "")).strip()
+                        or lk_prov.get((r.get("Unidad de Negocio", ""), r["_nom_norm"]), "")
+                    ),
+                    axis=1,
+                )
+
                 df_total.drop(columns=["_nom_norm"], inplace=True, errors="ignore")
             # ─────────────────────────────────────────────────────────────────
 
@@ -770,10 +791,9 @@ if pagina == "Dashboard":
     df_actual = obtener_ultimo_inventario(df_historial)
 
     if not df_actual.empty:
-        # Recalcular Necesita Compra siempre desde el stock neto (no fiar del campo guardado)
-        df_actual["Necesita Compra"] = (
-            df_actual["Stock Neto Calculado"] < df_actual["Stock Mínimo"]
-        )
+        # "Necesita Compra" viene del campo marcado manualmente por el barista (🛒).
+        # obtener_ultimo_inventario ya lo parsea como bool desde el Sheet.
+        # NO recalcular desde stock vs mínimo — eso pisa la decisión del operador.
         crit = df_actual[df_actual["Necesita Compra"] == True]
 
         c1, c2, c3 = st.columns(3)
@@ -1283,6 +1303,8 @@ elif pagina == "Consulta":
         "Stock Neto Calculado":"Stock Total",
         "Unidad_Medida_H":     "Medida",
         "Stock Mínimo":        "Mínimo",
+        "Necesita Compra":     "¿Comprar?",
+        "Responsable":         "Responsable",
         "Fecha de Inventario": "Último Corte",
         "Comentarios":         "Comentarios",
     }
