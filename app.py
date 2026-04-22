@@ -2,7 +2,7 @@ import streamlit as st
 from google.oauth2.service_account import Credentials
 import gspread
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import time
 import calendar
 import unicodedata
@@ -56,6 +56,41 @@ UNIDADES     = ["Noble", "Coffee Station"]
 UNIDADES_MED = ["pz", "ml", "gr", "kg", "lt"]
 
 SPREADSHEET_ID = "1VZV81p-JqoaRPzMzsRurF6wntVefyaN5ozs3RJe6uJs"
+
+# ============================================================
+# ZONA HORARIA — Hermosillo usa MST fijo (UTC-7), sin horario de verano
+# ============================================================
+TZ_HERMOSILLO = timezone(timedelta(hours=-7))
+
+def ahora_hermosillo() -> datetime:
+    """Retorna datetime actual en hora de Hermosillo (MST, UTC-7)."""
+    return datetime.now(tz=TZ_HERMOSILLO)
+
+def ts_hermosillo() -> str:
+    """Timestamp formateado para guardar en Sheets."""
+    return ahora_hermosillo().strftime("%Y-%m-%d %H:%M:%S")
+
+def fmt_fecha_hmo(dt) -> str:
+    """
+    Formatea un timestamp (naive o aware) a hora de Hermosillo.
+    Si el valor es NaT/None retorna cadena vacía.
+    """
+    if dt is None or (hasattr(dt, 'isnull') and dt.isnull()):
+        return ""
+    try:
+        import pandas as pd
+        if pd.isnull(dt):
+            return ""
+    except Exception:
+        pass
+    try:
+        if hasattr(dt, 'tzinfo') and dt.tzinfo is None:
+            # Asumir que Sheets guarda en UTC si no tiene zona
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt_hmo = dt.astimezone(TZ_HERMOSILLO)
+        return dt_hmo.strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return str(dt)[:16]
 
 # ============================================================
 # HELPERS UTILITARIOS
@@ -461,11 +496,11 @@ def obtener_ultimo_inventario(df_hist: pd.DataFrame, unidad: str = None) -> pd.D
 
 
 def fecha_max_segura(serie: pd.Series) -> str:
-    """Retorna el máximo de timestamps como string. NaT-safe."""
+    """Retorna el máximo de timestamps como string en hora Hermosillo. NaT-safe."""
     validas = serie.dropna()
     if validas.empty:
         return "Sin registros"
-    return validas.max().strftime("%d/%m %H:%M")
+    return fmt_fecha_hmo(validas.max())
 
 
 def buscar_insumo_en_actual(df_actual: pd.DataFrame, nombre: str) -> pd.Series:
@@ -792,7 +827,7 @@ if pagina == "Dashboard":
     df_raw, df_historial = cargar_datos_integrales()  # CORRECCIÓN E
     st.title("📊 Dashboard Operativo")
 
-    ahora = datetime.now()
+    ahora = ahora_hermosillo()
     dias_faltantes = calendar.monthrange(ahora.year, ahora.month)[1] - ahora.day
     if dias_faltantes <= 4:
         st.info(
@@ -823,9 +858,11 @@ if pagina == "Dashboard":
             ins_n = crit[crit["Unidad de Negocio"] == "Noble"]
             if not ins_n.empty:
                 for _, r in ins_n.iterrows():
+                    fecha_str = fmt_fecha_hmo(r.get("Fecha de Inventario"))
                     st.error(
                         f"**{r['Nombre del Insumo']}** "
                         f"(Stock: {r['Stock Neto Calculado']} / Mín: {r['Stock Mínimo']})"
+                        + (f"  \n🕒 Último conteo: {fecha_str}" if fecha_str else "")
                     )
             else:
                 st.success("Operación cubierta.")
@@ -834,9 +871,11 @@ if pagina == "Dashboard":
             ins_cs = crit[crit["Unidad de Negocio"] == "Coffee Station"]
             if not ins_cs.empty:
                 for _, r in ins_cs.iterrows():
+                    fecha_str = fmt_fecha_hmo(r.get("Fecha de Inventario"))
                     st.error(
                         f"**{r['Nombre del Insumo']}** "
                         f"(Stock: {r['Stock Neto Calculado']} / Mín: {r['Stock Mínimo']})"
+                        + (f"  \n🕒 Último conteo: {fecha_str}" if fecha_str else "")
                     )
             else:
                 st.success("Operación cubierta.")
@@ -1028,7 +1067,7 @@ elif pagina == "Inventario":
                 st.error(err)
                 st.session_state["_procesando_inventario"] = False
             else:
-                fh    = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                fh    = ts_hermosillo()
                 filas = []
                 for n, info in regs.items():
                     dm = info["row"]
@@ -1126,7 +1165,7 @@ elif pagina == "Ingresos":
                 st.error(err)
                 st.session_state["_procesando_bulk"] = False
             else:
-                fh         = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                fh         = ts_hermosillo()
                 filas_bulk = []
                 for _, r_ed in edited_df.iterrows():
                     ingreso = limpiar_valor(r_ed["+ Ingreso"])
@@ -1241,7 +1280,7 @@ elif pagina == "Ingresos":
                     st.error(err)
                     st.session_state["_procesando_ingreso"] = False
                 else:
-                    fh    = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    fh    = ts_hermosillo()
                     filas = []
                     for n, info in regs_ingreso.items():
                         dm = info["row"]
@@ -1338,7 +1377,7 @@ elif pagina == "Consulta":
     csv = df_final.to_csv(index=False).encode("utf-8")
     st.download_button(
         "📥 Descargar Reporte (CSV)", data=csv,
-        file_name=f"Inventario_{u_sel}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+        file_name=f"Inventario_{u_sel}_{ahora_hermosillo().strftime('%Y%m%d_%H%M')}.csv",
         mime="text/csv", use_container_width=True
     )
 
@@ -1361,7 +1400,7 @@ elif pagina == "Impresion":
     if g_sel and not df_u.empty:
         df_p  = df_u[df_u["Grupo"].isin(g_sel)].sort_values(["Grupo", "Nombre del Insumo"])
         t     = f"*** CONTEO {u_sel.upper()} ***\n"
-        t    += f"Fecha: {datetime.now().strftime('%d/%m/%Y')}\n"
+        t    += f"Fecha: {ahora_hermosillo().strftime('%d/%m/%Y')}\n"
         t    += "-" * 22 + "\n"
         for _, r in df_p.iterrows():
             t += f" {str(r['Nombre del Insumo'])[:20]}\n"
@@ -1386,7 +1425,7 @@ elif pagina == "ListaCompra":
     com = df_actual[df_actual["Necesita Compra"] == True]
     if not com.empty:
         t  = f"*** COMPRAS {u_sel.upper()} ***\n"
-        t += f"Fecha: {datetime.now().strftime('%d/%m/%Y')}\n"
+        t += f"Fecha: {ahora_hermosillo().strftime('%d/%m/%Y')}\n"
         t += "-" * 22 + "\n"
         for _, r in com.iterrows():
             t += f"• {str(r['Nombre del Insumo'])[:20]}\n"
@@ -1409,7 +1448,7 @@ elif pagina == "ReporteStock":
         st.stop()
 
     t         = f"*** INVENTARIO {u_sel.upper()} ***\n"
-    t        += f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
+    t        += f"Fecha: {ahora_hermosillo().strftime('%d/%m/%Y %H:%M')}\n"
     t        += "-" * 22 + "\n"
     col_grupo = "Grupo" if "Grupo" in df_actual.columns else "Grupo"
     df_rep    = df_actual.sort_values([col_grupo, "Nombre del Insumo"])
@@ -1453,7 +1492,7 @@ elif pagina == "CorteMes":
                     st.error("No hay datos de inventario para cerrar.")
                     st.stop()
 
-                fh          = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                fh          = ts_hermosillo()
                 encabezados = COLS_HISTORIAL
                 col_grupo   = "Grupo"    if "Grupo"    in df_corte.columns else "Grupo"
                 col_prov    = "Proveedor" if "Proveedor" in df_corte.columns else "Proveedor"
