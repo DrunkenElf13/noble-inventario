@@ -30,20 +30,20 @@ COLS_INSUMOS = [
 COLS_HISTORIAL = [
     "Unidad de Negocio",      # A
     "Nombre del Insumo",      # B
-    "Marca_H",                # C
-    "Proveedor_H",            # D
-    "Grupo_H",                # E
-    "Espacio_H",              # F
-    "Pres_Compra_H",          # G
-    "Unidad_Medida_H",        # H
+    "Marca",                  # C  — nombre real en el Sheet
+    "Proveedor",              # D  — nombre real en el Sheet
+    "Grupo",                  # E  — nombre real en el Sheet
+    "Fecha de Entrada",       # F  — nombre real en el Sheet
+    "Presentación de Compra", # G  — nombre real en el Sheet
+    "Unidad de Medida",       # H  — nombre real en el Sheet
     "Alm",                    # I
     "Barra",                  # J
     "Stock Neto",             # K
     "Stock Mínimo",           # L
-    "Necesita Compra",        # M
+    "¿Comprar?",              # M  — nombre real en el Sheet
     "Responsable",            # N
     "Fecha de Inventario",    # O
-    "Comentarios",            # P
+    "Observaciones",          # P  — nombre real en el Sheet
 ]
 COLS_ACCESOS    = ["Clave", "Nombre", "Rol"]
 
@@ -281,9 +281,9 @@ def cargar_datos_integrales():
             df_total["Fecha de Inventario"] = pd.to_datetime(
                 df_total["Fecha de Inventario"], errors="coerce"
             )
-            # Espacio_H se usa como fecha de respaldo solo si es parseable
-            df_total["Espacio_H"] = pd.to_datetime(
-                df_total["Espacio_H"], errors="coerce"
+            # "Fecha de Entrada" se usa como fecha de respaldo solo si es parseable
+            df_total["Fecha de Entrada"] = pd.to_datetime(
+                df_total["Fecha de Entrada"], errors="coerce"
             )
 
             # ── ENRIQUECIMIENTO DE STOCK MÍNIMO ──────────────────────────────
@@ -317,19 +317,19 @@ def cargar_datos_integrales():
                     axis=1,
                 )
 
-                # Marca_H: rellenar solo si viene vacía
-                df_total["Marca_H"] = df_total.apply(
+                # Marca: rellenar solo si viene vacía
+                df_total["Marca"] = df_total.apply(
                     lambda r: (
-                        str(r.get("Marca_H", "")).strip()
+                        str(r.get("Marca", "")).strip()
                         or lk_marca.get((r.get("Unidad de Negocio", ""), r["_nom_norm"]), "")
                     ),
                     axis=1,
                 )
 
-                # Proveedor_H: rellenar solo si viene vacío
-                df_total["Proveedor_H"] = df_total.apply(
+                # Proveedor: rellenar solo si viene vacío
+                df_total["Proveedor"] = df_total.apply(
                     lambda r: (
-                        str(r.get("Proveedor_H", "")).strip()
+                        str(r.get("Proveedor", "")).strip()
                         or lk_prov.get((r.get("Unidad de Negocio", ""), r["_nom_norm"]), "")
                     ),
                     axis=1,
@@ -415,8 +415,8 @@ def obtener_ultimo_inventario(df_hist: pd.DataFrame, unidad: str = None) -> pd.D
     if df_u.empty:
         return pd.DataFrame()
 
-    # Fecha efectiva: prioridad a "Fecha de Inventario", fallback a "Espacio_H"
-    df_u["_fecha_efectiva"] = df_u["Fecha de Inventario"].combine_first(df_u["Espacio_H"])
+    # Fecha efectiva: prioridad a "Fecha de Inventario", fallback a "Fecha de Entrada"
+    df_u["_fecha_efectiva"] = df_u["Fecha de Inventario"].combine_first(df_u["Fecha de Entrada"])
 
     # CORRECCIÓN B: clave de deduplicación con nombre normalizado
     df_u["_nombre_norm"] = df_u["Nombre del Insumo"].apply(normalizar_nombre)
@@ -433,9 +433,9 @@ def obtener_ultimo_inventario(df_hist: pd.DataFrame, unidad: str = None) -> pd.D
 
     df_actual["Stock Neto Calculado"] = df_actual["Alm"] + df_actual["Barra"]
 
-    if "Necesita Compra" in df_actual.columns:
+    if "¿Comprar?" in df_actual.columns:
         df_actual["Necesita Compra"] = (
-            df_actual["Necesita Compra"].astype(str).str.strip().str.upper() == "TRUE"
+            df_actual["¿Comprar?"].astype(str).str.strip().str.upper() == "TRUE"
         )
     else:
         df_actual["Necesita Compra"] = (
@@ -833,11 +833,11 @@ if pagina == "Dashboard":
         st.subheader("🕒 Actividad Reciente")
         df_log = df_historial.copy()
         df_log["Fecha de Inventario"] = df_log["Fecha de Inventario"].combine_first(
-            df_log["Espacio_H"]
+            df_log["Fecha de Entrada"]
         )
         cols_log = [
             "Fecha de Inventario", "Responsable", "Unidad de Negocio",
-            "Nombre del Insumo", "Stock Neto", "Necesita Compra", "Comentarios"
+            "Nombre del Insumo", "Stock Neto", "¿Comprar?", "Observaciones"
         ]
         cols_log_ok = [c for c in cols_log if c in df_log.columns]
         st.dataframe(
@@ -910,7 +910,7 @@ elif pagina == "Inventario":
         h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([2.2, 0.7, 0.7, 0.7, 0.7, 0.7, 1.0, 2.0])
         for col, label in zip(
             [h1, h2, h3, h4, h5, h6, h7, h8],
-            ["Insumo / Ref", "Almacén", "Barra", "Tara", "Medida", "Neto", "¿Pedir?", "Comentarios"]
+            ["Insumo / Ref", "Almacén", "Barra", "Tara", "Medida", "Neto", "¿Pedir?", "Observaciones"]
         ):
             col.write(f"**{label}**")
         st.divider()
@@ -1277,7 +1277,7 @@ elif pagina == "Consulta":
     with col_s:
         busqueda = st.text_input("🔍 Búsqueda rápida:")
     with col_p:
-        col_prov = "Proveedor_H" if "Proveedor_H" in df_actual.columns else None
+        col_prov = "Proveedor" if "Proveedor" in df_actual.columns else None
         if col_prov:
             provs    = ["Todos"] + sorted(df_actual[col_prov].dropna().unique().tolist())
             prov_sel = st.selectbox("🚛 Filtro Proveedor:", provs)
@@ -1294,19 +1294,19 @@ elif pagina == "Consulta":
         df_display = df_display[df_display[col_prov] == prov_sel]
 
     col_map = {
-        "Grupo_H":             "Grupo",
+        "Grupo":             "Grupo",
         "Nombre del Insumo":   "Insumo",
-        "Marca_H":             "Marca",
-        "Proveedor_H":         "Proveedor",
+        "Marca":             "Marca",
+        "Proveedor":         "Proveedor",
         "Alm":                 "Almacén",
         "Barra":               "Barra",
         "Stock Neto Calculado":"Stock Total",
-        "Unidad_Medida_H":     "Medida",
+        "Unidad de Medida":     "Medida",
         "Stock Mínimo":        "Mínimo",
         "Necesita Compra":     "¿Comprar?",
         "Responsable":         "Responsable",
         "Fecha de Inventario": "Último Corte",
-        "Comentarios":         "Comentarios",
+        "Observaciones":         "Observaciones",
     }
     cols_ok  = [c for c in col_map if c in df_display.columns]
     df_final = df_display[cols_ok].rename(columns=col_map)
@@ -1399,7 +1399,7 @@ elif pagina == "ReporteStock":
     t         = f"*** INVENTARIO {u_sel.upper()} ***\n"
     t        += f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
     t        += "-" * 22 + "\n"
-    col_grupo = "Grupo_H" if "Grupo_H" in df_actual.columns else "Grupo"
+    col_grupo = "Grupo" if "Grupo" in df_actual.columns else "Grupo"
     df_rep    = df_actual.sort_values([col_grupo, "Nombre del Insumo"])
     gr_actual = ""
     for _, r in df_rep.iterrows():
@@ -1443,16 +1443,16 @@ elif pagina == "CorteMes":
 
                 fh          = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 encabezados = COLS_HISTORIAL
-                col_grupo   = "Grupo_H"    if "Grupo_H"    in df_corte.columns else "Grupo"
-                col_prov    = "Proveedor_H" if "Proveedor_H" in df_corte.columns else "Proveedor"
+                col_grupo   = "Grupo"    if "Grupo"    in df_corte.columns else "Grupo"
+                col_prov    = "Proveedor" if "Proveedor" in df_corte.columns else "Proveedor"
 
                 filas_corte = []
                 for _, r in df_corte.iterrows():
                     filas_corte.append([
                         r.get("Unidad de Negocio", ""), r.get("Nombre del Insumo", ""),
-                        r.get("Marca_H", ""),            r.get(col_prov, ""),
+                        r.get("Marca", ""),            r.get(col_prov, ""),
                         r.get(col_grupo, ""),            "",
-                        r.get("Pres_Compra_H", ""),      r.get("Unidad_Medida_H", ""),
+                        r.get("Presentación de Compra", ""),      r.get("Unidad de Medida", ""),
                         r.get("Alm", 0),                 r.get("Barra", 0),
                         r.get("Stock Neto Calculado", 0), r.get("Stock Mínimo", 0),
                         "TRUE" if r.get("Necesita Compra", False) else "FALSE",
