@@ -473,15 +473,13 @@ with st.sidebar:
     with st.expander("ℹ️ Guía de Clasificación (Grupos)"):
         st.markdown("""
 **Rutina Diaria (Perecederos):**
-* **Grupo A:** Café, Leches y Lácteos
-* **Grupo B:** Jarabes y Salsas
-* **Grupo C:** Polvos, Tés y Tisanas
-
-**Rutina 2 Días (Secos y Suministros):**
-* **Grupo D:** Empaques y Desechables
-* **Grupo E:** Suministros de Limpieza
-* **Grupo F:** Comida y Vitrina
-* **Grupo G:** Otros (Retail / Utensilios)
+{"Grupo": "A", "Categoría": "Café y Lácteos", "Frecuencia": "Diaria", "Detalles": "Granos de café, Leches (Entera, Deslactosada, Vegetales), Cremas."},
+            {"Grupo": "B", "Categoría": "Jarabes y Salsas", "Frecuencia": "Diaria", "Detalles": "Saborizantes, Salsas (Chocolate/Caramelo), Purés, Concentrados."},
+            {"Grupo": "C", "Categoría": "Polvos y Tés", "Frecuencia": "Diaria", "Detalles": "Matcha, Taro, Chai, Bases Frappé, Cacao, Azúcar, Tisanas."},
+            {"Grupo": "D", "Categoría": "Empaques / Desechables", "Frecuencia": "2 Días", "Detalles": "Vasos, Tapas, Mangas, Servilletas, Popotes, Agitadores, Bolsas Kraft."},
+            {"Grupo": "E", "Categoría": "Limpieza", "Frecuencia": "2 Días", "Detalles": "Jabones, Desengrasantes, Cloro, Papel Higiénico, Fibras, Trapos."},
+            {"Grupo": "F", "Categoría": "Comida y Vitrina", "Frecuencia": "2 Días", "Detalles": "Panadería, Postres, Galletas, Alimentos preparados."},
+            {"Grupo": "G", "Categoría": "Retail / Otros", "Frecuencia": "2 Días", "Detalles": "Café p/venta en grano, Filtros de máquina, Papelería, Merch, Utensilios."}
         """)
 
     # --- ZONA ADMIN ---
