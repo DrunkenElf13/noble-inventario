@@ -286,56 +286,68 @@ def cargar_datos_integrales():
                 df_total["Fecha de Entrada"], errors="coerce"
             )
 
-            # ── ENRIQUECIMIENTO DE STOCK MÍNIMO ──────────────────────────────
-            # El historial guarda Stock Mínimo en col L, pero si el encabezado
-            # del Sheet no coincide exactamente, llega en None/vacío.
-            # Aquí lo reforzamos desde la hoja Insumos (fuente maestra).
-            # Si el historial ya traía un valor válido (>0), se conserva.
-            # Si llega en 0 o vacío, se sustituye con el de Insumos.
+            # ── MERGE MAESTRO: datos estáticos SIEMPRE de Insumos ────────────
+            # Insumos  → fuente de verdad para: Nombre, Marca, Proveedor,
+            #            Grupo, Presentación de Compra, Unidad de Medida,
+            #            Stock Mínimo.
+            # Historial → fuente de verdad para: Alm, Barra, Stock Neto,
+            #             ¿Comprar?, Responsable, Fecha de Inventario,
+            #             Observaciones.
+            # El join se hace por nombre normalizado + Unidad de Negocio
+            # para ser inmune a diferencias de acentos o espacios.
             if not df_ins.empty:
-                # Construir lookup por (Unidad, nombre_normalizado)
-                df_ins_lk = df_ins.copy()
-                df_ins_lk["_nom_norm"] = df_ins_lk["Nombre del Insumo"].apply(normalizar_nombre)
+                # Preparar tabla maestra con clave normalizada
+                df_ins_m = df_ins.copy()
+                df_ins_m["_nom_norm"] = df_ins_m["Nombre del Insumo"].apply(normalizar_nombre)
+                df_ins_m["_clave"] = (
+                    df_ins_m["Unidad de Negocio"].fillna("") + "||" + df_ins_m["_nom_norm"]
+                )
+                COLS_ESTATICAS = [
+                    "_clave",
+                    "Nombre del Insumo",
+                    "Marca",
+                    "Proveedor",
+                    "Grupo",
+                    "Presentación de Compra",
+                    "Unidad de Medida",
+                    "Stock Mínimo",
+                ]
+                df_ins_m = df_ins_m[[c for c in COLS_ESTATICAS if c in df_ins_m.columns]].copy()
+                df_ins_m["Stock Mínimo"] = df_ins_m["Stock Mínimo"].apply(limpiar_valor)
+                df_ins_m = df_ins_m.drop_duplicates(subset=["_clave"], keep="last")
 
-                lk_min   = {}
-                lk_marca = {}
-                lk_prov  = {}
-                for _, row in df_ins_lk.iterrows():
-                    k = (row.get("Unidad de Negocio", ""), row["_nom_norm"])
-                    lk_min[k]   = limpiar_valor(row.get("Stock Mínimo", 0))
-                    lk_marca[k] = str(row.get("Marca", "")).strip()
-                    lk_prov[k]  = str(row.get("Proveedor", "")).strip()
-
+                # Preparar clave en historial
                 df_total["_nom_norm"] = df_total["Nombre del Insumo"].apply(normalizar_nombre)
-
-                # Stock Mínimo: tomar del historial si >0, sino del maestro
-                df_total["Stock Mínimo"] = df_total.apply(
-                    lambda r: (
-                        limpiar_valor(r.get("Stock Mínimo"))
-                        or lk_min.get((r.get("Unidad de Negocio", ""), r["_nom_norm"]), 0.0)
-                    ),
-                    axis=1,
+                df_total["_clave"] = (
+                    df_total["Unidad de Negocio"].fillna("") + "||" + df_total["_nom_norm"]
                 )
 
-                # Marca: rellenar solo si viene vacía
-                df_total["Marca"] = df_total.apply(
-                    lambda r: (
-                        str(r.get("Marca", "")).strip()
-                        or lk_marca.get((r.get("Unidad de Negocio", ""), r["_nom_norm"]), "")
-                    ),
-                    axis=1,
-                )
+                # Columnas de cifras que el historial conserva intactas
+                COLS_CIFRAS = [
+                    "_clave",
+                    "Unidad de Negocio",
+                    "Alm",
+                    "Barra",
+                    "Stock Neto",
+                    "¿Comprar?",
+                    "Responsable",
+                    "Fecha de Inventario",
+                    "Fecha de Entrada",
+                    "Observaciones",
+                ]
+                cols_cifras_ok = [c for c in COLS_CIFRAS if c in df_total.columns]
+                df_cifras = df_total[cols_cifras_ok].copy()
 
-                # Proveedor: rellenar solo si viene vacío
-                df_total["Proveedor"] = df_total.apply(
-                    lambda r: (
-                        str(r.get("Proveedor", "")).strip()
-                        or lk_prov.get((r.get("Unidad de Negocio", ""), r["_nom_norm"]), "")
-                    ),
-                    axis=1,
+                # Merge: historial (cifras) LEFT JOIN insumos (estáticos)
+                df_total = df_cifras.merge(
+                    df_ins_m,
+                    on="_clave",
+                    how="left",
                 )
-
-                df_total.drop(columns=["_nom_norm"], inplace=True, errors="ignore")
+                df_total.drop(
+                    columns=["_clave", "_nom_norm"],
+                    inplace=True, errors="ignore"
+                )
             # ─────────────────────────────────────────────────────────────────
 
         return df_ins, df_total
