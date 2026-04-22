@@ -65,13 +65,30 @@ def limpiar_valor(valor) -> float:
     """
     Convierte cualquier valor de celda a float de forma segura.
     Retorna 0.0 solo si el valor realmente es vacío/nulo/inválido.
+
+    Mejoras v3 (integración Gemini):
+    - Maneja booleanos nativos (True → 1.0, False → 0.0)
+    - Elimina espacios internos dentro del número ("1 500" → 1500.0)
+    - Tolera guiones como cero ("-" → 0.0)
+    - Maneja notación científica ("1.5e3" → 1500.0)
+    - Maneja NaN de pandas y float('nan')
     """
     if valor is None:
         return 0.0
+    if isinstance(valor, bool):
+        return 1.0 if valor else 0.0
     if isinstance(valor, (int, float)):
-        return float(valor) if not pd.isna(valor) else 0.0
+        try:
+            return 0.0 if pd.isna(valor) else float(valor)
+        except (TypeError, ValueError):
+            return 0.0
     try:
-        return float(str(valor).replace('%', '').replace('$', '').replace(',', '').strip())
+        s = str(valor).strip()
+        if not s or s in ("-", "—", "–", "N/A", "n/a", "NA", "na", "None", "null"):
+            return 0.0
+        # Eliminar símbolos de moneda/porcentaje y espacios internos
+        s = s.replace('%', '').replace('$', '').replace(',', '').replace(' ', '')
+        return float(s)
     except (ValueError, TypeError):
         return 0.0
 
@@ -472,15 +489,56 @@ with st.sidebar:
     st.divider()
     with st.expander("ℹ️ Guía de Clasificación (Grupos)"):
         st.markdown("""
-**Rutina Diaria (Perecederos):**
-{"Grupo": "A", "Categoría": "Café y Lácteos", "Frecuencia": "Diaria", "Detalles": "Granos de café, Leches (Entera, Deslactosada, Vegetales), Cremas."},
-            {"Grupo": "B", "Categoría": "Jarabes y Salsas", "Frecuencia": "Diaria", "Detalles": "Saborizantes, Salsas (Chocolate/Caramelo), Purés, Concentrados."},
-            {"Grupo": "C", "Categoría": "Polvos y Tés", "Frecuencia": "Diaria", "Detalles": "Matcha, Taro, Chai, Bases Frappé, Cacao, Azúcar, Tisanas."},
-            {"Grupo": "D", "Categoría": "Empaques / Desechables", "Frecuencia": "2 Días", "Detalles": "Vasos, Tapas, Mangas, Servilletas, Popotes, Agitadores, Bolsas Kraft."},
-            {"Grupo": "E", "Categoría": "Limpieza", "Frecuencia": "2 Días", "Detalles": "Jabones, Desengrasantes, Cloro, Papel Higiénico, Fibras, Trapos."},
-            {"Grupo": "F", "Categoría": "Comida y Vitrina", "Frecuencia": "2 Días", "Detalles": "Panadería, Postres, Galletas, Alimentos preparados."},
-            {"Grupo": "G", "Categoría": "Retail / Otros", "Frecuencia": "2 Días", "Detalles": "Café p/venta en grano, Filtros de máquina, Papelería, Merch, Utensilios."}
+**🔴 Rutina Diaria — Perecederos y Alta Rotación**
+
+**Grupo A — Café, Leches y Lácteos**
+Insumos de uso constante en cada turno. Caducan o se agotan rápido. Conteo obligatorio todos los días antes de abrir.
+Ejemplos: café en grano, café molido, leche entera, leche de avena, leche de almendra, crema para batir, mantequilla.
+
+**Grupo B — Jarabes, Salsas y Bases Líquidas**
+Productos abertos que se contaminan con el tiempo. Revisar nivel y estado del envase diariamente.
+Ejemplos: jarabes Monin/Torani, salsa de caramelo, salsa de chocolate, base de matcha líquida, concentrados de fruta.
+
+**Grupo C — Polvos, Tés y Tisanas**
+Sensibles a humedad. Contar en bolsa/bote cerrado. Incluye todo lo que se pesa o dosifica en scoop.
+Ejemplos: matcha en polvo, chocolate en polvo, canela, cúrcuma, chai spice, tés de caja, tisanas sueltas.
+
+---
+
+**🟡 Rutina cada 2 Días — Secos y Suministros**
+
+**Grupo D — Empaques y Desechables**
+Conteo por pieza o rollo. Incluye todo lo que sale de la tienda con el producto.
+Ejemplos: vasos 8/12/16/20 oz, tapas, popotes, servilletas, bolsas de papel, etiquetas térmicas, mangas de cartón.
+
+**Grupo E — Suministros de Limpieza**
+Incluye lo que se usa en el área de barra y en el área de preparación. Conteo en mililitros o piezas según presentación.
+Ejemplos: desengrasante, cloro, gel antibacterial, franelas, esponjas, cepillos portafiltro, pastillas de limpieza.
+
+**Grupo F — Comida y Vitrina**
+Productos para venta directa o preparación de alimentos. Revisión de fecha de caducidad en cada conteo.
+Ejemplos: pan para sándwich, pan dulce, muffins, galletas empacadas, snacks, fruta para decoración.
+
+**Grupo G — Retail, Utensilios y Otros**
+Todo lo que se vende como producto terminado o se usa como equipo de apoyo. Conteo menos frecuente pero registrar cualquier salida.
+Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, termómetros de barra, cucharas medidoras.
         """)
+
+    # — TABLA DE GRUPOS —
+    with st.expander("📊 Tabla Resumen de Grupos"):
+        grupos_info = [
+            {"Grupo": "A", "Nombre": "Café, Leches y Lácteos",        "Rutina": "Diaria",      "Riesgo": "Alto",  "Almacén": "Refrigerador / Bodega seca", "Nota": "Contar antes de abrir"},
+            {"Grupo": "B", "Nombre": "Jarabes, Salsas y Bases",       "Rutina": "Diaria",      "Riesgo": "Alto",  "Almacén": "Repisa barra / Refrigerador","Nota": "Revisar envases abiertos"},
+            {"Grupo": "C", "Nombre": "Polvos, Tés y Tisanas",         "Rutina": "Diaria",      "Riesgo": "Medio", "Almacén": "Bodega seca hermética",       "Nota": "Proteger de humedad"},
+            {"Grupo": "D", "Nombre": "Empaques y Desechables",        "Rutina": "Cada 2 días", "Riesgo": "Medio", "Almacén": "Bodega empaques",             "Nota": "Contar en piezas/rollos"},
+            {"Grupo": "E", "Nombre": "Suministros de Limpieza",       "Rutina": "Cada 2 días", "Riesgo": "Bajo",  "Almacén": "Bodega limpieza",             "Nota": "Separar de alimentos"},
+            {"Grupo": "F", "Nombre": "Comida y Vitrina",              "Rutina": "Cada 2 días", "Riesgo": "Alto",  "Almacén": "Vitrina / Refrigerador",      "Nota": "Verificar caducidad"},
+            {"Grupo": "G", "Nombre": "Retail, Utensilios y Otros",   "Rutina": "Cada 2 días", "Riesgo": "Bajo",  "Almacén": "Bodega general / Mostrador",  "Nota": "Registrar cada salida"},
+        ]
+        st.dataframe(
+            pd.DataFrame(grupos_info),
+            hide_index=True, use_container_width=True
+        )
 
     # --- ZONA ADMIN ---
     if st.session_state.user_role == "admin":
@@ -681,6 +739,10 @@ if pagina == "Dashboard":
     df_actual = obtener_ultimo_inventario(df_historial)
 
     if not df_actual.empty:
+        # Recalcular Necesita Compra siempre desde el stock neto (no fiar del campo guardado)
+        df_actual["Necesita Compra"] = (
+            df_actual["Stock Neto Calculado"] < df_actual["Stock Mínimo"]
+        )
         crit = df_actual[df_actual["Necesita Compra"] == True]
 
         c1, c2, c3 = st.columns(3)
@@ -794,10 +856,10 @@ elif pagina == "Inventario":
         st.info("Selecciona al menos un grupo para mostrar insumos.")
     else:
         regs = {}
-        h1, h2, h3, h4, h5, h6, h7 = st.columns([2.2, 0.8, 0.8, 0.8, 0.8, 1.0, 2.0])
+        h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([2.2, 0.7, 0.7, 0.7, 0.7, 0.7, 1.0, 2.0])
         for col, label in zip(
-            [h1, h2, h3, h4, h5, h6, h7],
-            ["Insumo / Ref", "Almacén", "Barra", "Medida", "Neto", "¿Pedir?", "Comentarios"]
+            [h1, h2, h3, h4, h5, h6, h7, h8],
+            ["Insumo / Ref", "Almacén", "Barra", "Tara", "Medida", "Neto", "¿Pedir?", "Comentarios"]
         ):
             col.write(f"**{label}**")
         st.divider()
@@ -811,7 +873,7 @@ elif pagina == "Inventario":
             v_prev = prev["Stock Neto Calculado"] if prev is not None else 0.0
             v_min  = limpiar_valor(row.get("Stock Mínimo", 0))
 
-            c1, c2, c3, c4, c5, c6, c7 = st.columns([2.2, 0.8, 0.8, 0.8, 0.8, 1.0, 2.0])
+            c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([2.2, 0.7, 0.7, 0.7, 0.7, 0.7, 1.0, 2.0])
             with c1:
                 st.write(f"**{nom}**")
                 st.caption(f"Marca: {row.get('Marca','-')} | Prov: {row.get('Proveedor','-')}")
@@ -824,25 +886,37 @@ elif pagina == "Inventario":
                 )
             with c2:
                 v_a = st.number_input(
-                    "Alm", min_value=0.0, step=1.0,
-                    key=f"a_{safe_nom}", label_visibility="collapsed"
+                    "Alm", min_value=0.0, step=1.0, value=None,
+                    key=f"a_{safe_nom}", label_visibility="collapsed",
+                    placeholder="0"
                 )
+                v_a = v_a if v_a is not None else 0.0
             with c3:
                 v_b = st.number_input(
-                    "Bar", min_value=0.0, step=1.0,
-                    key=f"b_{safe_nom}", label_visibility="collapsed"
+                    "Bar", min_value=0.0, step=1.0, value=None,
+                    key=f"b_{safe_nom}", label_visibility="collapsed",
+                    placeholder="0"
                 )
+                v_b = v_b if v_b is not None else 0.0
             with c4:
+                v_tara = st.number_input(
+                    "Tara", min_value=0.0, step=0.1, value=None,
+                    key=f"t_{safe_nom}", label_visibility="collapsed",
+                    placeholder="kg/gr",
+                    help="Peso del contenedor (tara). Se restará del total capturado."
+                )
+                v_tara = v_tara if v_tara is not None else 0.0
+            with c5:
                 u_act = str(row.get("Unidad de Medida", "pz")).lower()
                 v_u = st.selectbox(
                     "U", UNIDADES_MED,
                     index=UNIDADES_MED.index(u_act) if u_act in UNIDADES_MED else 0,
                     key=f"u_{safe_nom}", label_visibility="collapsed"
                 )
-            with c5:
-                v_n = v_a + v_b
-                st.write(f"**{v_n:.1f}**")
             with c6:
+                v_n = max(0.0, (v_a + v_b) - v_tara)
+                st.write(f"**{v_n:.1f}**")
+            with c7:
                 p_key       = f"p_{safe_nom}"
                 manual_key  = f"m_{safe_nom}"
                 last_math_k = f"lm_{safe_nom}"
@@ -857,10 +931,13 @@ elif pagina == "Inventario":
                     def cb(): st.session_state[mk] = st.session_state[k]
                     return cb
 
+                # Botón apagado por defecto — el barista lo activa manualmente
+                if p_key not in st.session_state:
+                    st.session_state[p_key] = False
                 if st.session_state[manual_key] is None:
-                    st.session_state[p_key] = math_val
+                    st.session_state[p_key] = False
                 v_p = st.toggle("🛒", key=p_key, on_change=make_cb(p_key, manual_key))
-            with c7:
+            with c8:
                 v_c = st.text_input(
                     "Nota...", key=f"c_{safe_nom}",
                     label_visibility="collapsed", placeholder="Opcional"
@@ -1031,10 +1108,10 @@ elif pagina == "Ingresos":
         if insumos_llegados:
             regs_ingreso = {}
             st.divider()
-            h1, h2, h3, h4 = st.columns([3, 2, 2, 2])
+            h1, h2, h3, h4, h5 = st.columns([3, 2, 1.5, 1.5, 2])
             for col, label in zip(
-                [h1, h2, h3, h4],
-                ["Insumo", "Stock Ant (Alm+Bar)", "+ Cantidad", "= Nuevo Total"]
+                [h1, h2, h3, h4, h5],
+                ["Insumo", "Stock Ant (Alm+Bar)", "+ Cantidad", "Tara", "= Nuevo Total"]
             ):
                 col.write(f"**{label}**")
             st.divider()
@@ -1050,7 +1127,7 @@ elif pagina == "Ingresos":
                 v_b_prev = prev["Barra"] if prev is not None else 0.0
                 v_min    = limpiar_valor(row_ins.get("Stock Mínimo", 0))
 
-                c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
+                c1, c2, c3, c4, c5 = st.columns([3, 2, 1.5, 1.5, 2])
                 with c1:
                     st.write(f"**{nom}**")
                     st.caption(
@@ -1062,11 +1139,22 @@ elif pagina == "Ingresos":
                     st.write(f"**Total Ant: {v_a_prev + v_b_prev}**")
                 with c3:
                     cant_ingreso = st.number_input(
-                        "Ingreso", min_value=0.0, step=1.0,
-                        key=f"ing_{i}", label_visibility="collapsed"
+                        "Ingreso", min_value=0.0, step=1.0, value=None,
+                        key=f"ing_{i}", label_visibility="collapsed",
+                        placeholder="0"
                     )
+                    cant_ingreso = cant_ingreso if cant_ingreso is not None else 0.0
                 with c4:
-                    nuevo_alm  = v_a_prev + cant_ingreso
+                    tara_ingreso = st.number_input(
+                        "Tara", min_value=0.0, step=0.1, value=None,
+                        key=f"tara_ing_{i}", label_visibility="collapsed",
+                        placeholder="tara",
+                        help="Peso del contenedor (tara). Se restará del ingreso capturado."
+                    )
+                    tara_ingreso = tara_ingreso if tara_ingreso is not None else 0.0
+                with c5:
+                    cant_neta  = max(0.0, cant_ingreso - tara_ingreso)
+                    nuevo_alm  = v_a_prev + cant_neta
                     nuevo_neto = nuevo_alm + v_b_prev
                     st.success(f"**{nuevo_neto:.1f}**")
 
