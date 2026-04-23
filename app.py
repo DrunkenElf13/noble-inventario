@@ -7,6 +7,12 @@ import time
 import calendar
 import unicodedata
 import re
+import io
+from reportlab.lib.pagesizes import landscape
+from reportlab.pdfgen import canvas as rl_canvas
+from reportlab.lib.units import mm
+
+st.set_page_config(layout="wide")
 
 # ============================================================
 # CONSTANTES — única fuente de verdad para todo el sistema
@@ -26,6 +32,7 @@ COLS_INSUMOS = [
     "Espacio_3",              # J
     "Espacio_4",              # K
     "Stock Mínimo",           # L
+    "Tara",                   # M — peso de tara del contenedor
 ]
 COLS_HISTORIAL = [
     "Unidad de Negocio",      # A
@@ -236,6 +243,72 @@ def liberar_doble_envio(key: str):
 
 
 # ============================================================
+# GENERADOR DE PDF 58mm
+# ============================================================
+def generar_pdf_58mm(titulo: str, lineas: list) -> bytes:
+    """
+    Genera un PDF con ancho de 58mm (rollo térmico).
+    lineas: lista de strings o tuplas (texto, estilo) donde estilo puede ser
+            'normal', 'bold', 'small', 'divider'
+    Retorna bytes del PDF.
+    """
+    ANCHO_MM = 58
+    MARGEN_MM = 3
+    LINEA_H_MM = 4.2
+    FUENTE_NORMAL = 7.5
+    FUENTE_BOLD = 8
+    FUENTE_SMALL = 6.5
+
+    # Calcular altura necesaria
+    alto_mm = 20 + len(lineas) * LINEA_H_MM + 10
+    alto_mm = max(alto_mm, 40)
+
+    ancho_pts = ANCHO_MM * mm
+    alto_pts = alto_mm * mm
+    margen_pts = MARGEN_MM * mm
+
+    buf = io.BytesIO()
+    c = rl_canvas.Canvas(buf, pagesize=(ancho_pts, alto_pts))
+    c.setFont("Courier-Bold", FUENTE_BOLD)
+
+    y = alto_pts - (5 * mm)
+
+    for linea in lineas:
+        if isinstance(linea, tuple):
+            texto, estilo = linea
+        else:
+            texto, estilo = linea, 'normal'
+
+        if estilo == 'divider':
+            c.setFont("Courier", FUENTE_SMALL)
+            c.drawString(margen_pts, y, "-" * 30)
+            y -= LINEA_H_MM * mm
+            continue
+        elif estilo == 'bold':
+            c.setFont("Courier-Bold", FUENTE_BOLD)
+        elif estilo == 'small':
+            c.setFont("Courier", FUENTE_SMALL)
+        elif estilo == 'title':
+            c.setFont("Courier-Bold", FUENTE_BOLD + 1)
+        else:
+            c.setFont("Courier", FUENTE_NORMAL)
+
+        # Truncar texto para que no desborde el ancho
+        max_chars = int((ANCHO_MM - MARGEN_MM * 2) / (FUENTE_NORMAL * 0.6))
+        texto_trunc = str(texto)[:max_chars]
+        c.drawString(margen_pts, y, texto_trunc)
+        y -= LINEA_H_MM * mm
+
+        if y < (5 * mm):
+            c.showPage()
+            y = alto_pts - (5 * mm)
+
+    c.save()
+    buf.seek(0)
+    return buf.read()
+
+
+# ============================================================
 # CAPA DE CONEXIÓN
 # ============================================================
 @st.cache_resource
@@ -324,7 +397,7 @@ def cargar_datos_integrales():
             # ── MERGE MAESTRO: datos estáticos SIEMPRE de Insumos ────────────
             # Insumos  → fuente de verdad para: Nombre, Marca, Proveedor,
             #            Grupo, Presentación de Compra, Unidad de Medida,
-            #            Stock Mínimo.
+            #            Stock Mínimo, Tara.
             # Historial → fuente de verdad para: Alm, Barra, Stock Neto,
             #             ¿Comprar?, Responsable, Fecha de Inventario,
             #             Observaciones.
@@ -346,9 +419,11 @@ def cargar_datos_integrales():
                     "Presentación de Compra",
                     "Unidad de Medida",
                     "Stock Mínimo",
+                    "Tara",
                 ]
                 df_ins_m = df_ins_m[[c for c in COLS_ESTATICAS if c in df_ins_m.columns]].copy()
                 df_ins_m["Stock Mínimo"] = df_ins_m["Stock Mínimo"].apply(limpiar_valor)
+                df_ins_m["Tara"] = df_ins_m["Tara"].apply(limpiar_valor) if "Tara" in df_ins_m.columns else 0.0
                 df_ins_m = df_ins_m.drop_duplicates(subset=["_clave"], keep="last")
 
                 # Preparar clave en historial
@@ -720,6 +795,8 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                 uc = st.text_input("Presentación de Compra")
                 um = st.selectbox("Unidad de Medida", UNIDADES_MED)
                 sm = st.number_input("Stock Mínimo", min_value=0.0)
+                tara_new = st.number_input("Tara (kg/gr)", min_value=0.0, value=0.0,
+                                           help="Peso del contenedor vacío para este insumo")
 
                 if st.form_submit_button("✨ Crear Insumo"):
                     if not n.strip():
@@ -730,7 +807,7 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                             st.error(err)
                         else:
                             try:
-                                nueva_fila = [u, n.strip(), m, p, g, "", uc, um, "", "", "", sm]
+                                nueva_fila = [u, n.strip(), m, p, g, "", uc, um, "", "", "", sm, tara_new]
                                 ws_ins.append_row(nueva_fila, value_input_option="USER_ENTERED")
                                 st.cache_data.clear()
                                 st.success(f"Insumo '{n.strip()}' creado.")
@@ -783,6 +860,11 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                                 "Stock Mínimo", min_value=0.0,
                                 value=limpiar_valor(d.get("Stock Mínimo", 0))
                             )
+                            e_tara = st.number_input(
+                                "Tara (kg/gr)", min_value=0.0,
+                                value=limpiar_valor(d.get("Tara", 0)),
+                                help="Peso del contenedor vacío. Se aplica automáticamente en cada inventario."
+                            )
 
                             if st.form_submit_button("💾 Actualizar Insumo"):
                                 if not e_n.strip():
@@ -798,10 +880,10 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                                                 raise ValueError("Número de fila inválido.")
                                             fila_act = [[
                                                 e_u, e_n.strip(), e_m, e_p, e_g,
-                                                "", e_uc, e_um, "", "", "", e_sm
+                                                "", e_uc, e_um, "", "", "", e_sm, e_tara
                                             ]]
                                             ws_ins.update(
-                                                range_name=f"A{idx}:L{idx}", values=fila_act
+                                                range_name=f"A{idx}:M{idx}", values=fila_act
                                             )
                                             st.cache_data.clear()
                                             st.success("Catálogo actualizado.")
@@ -957,119 +1039,94 @@ elif pagina == "Inventario":
     if df_f.empty:
         st.info("Selecciona al menos un grupo para mostrar insumos.")
     else:
-        regs = {}
-        h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([2.2, 0.7, 0.7, 0.7, 0.7, 0.7, 1.0, 2.0])
-        for col, label in zip(
-            [h1, h2, h3, h4, h5, h6, h7, h8],
-            ["Insumo / Ref", "Almacén", "Barra", "Tara", "Medida", "Neto", "¿Pedir?", "Observaciones"]
-        ):
-            col.write(f"**{label}**")
-        st.divider()
-
-        for _, row in df_f.iterrows():
-            nom      = str(row.get("Nombre del Insumo", ""))
-            safe_nom = re.sub(r'[^a-zA-Z0-9]', '_', nom)[:40]
-
-            # CORRECCIÓN B: buscar con nombre normalizado
-            prev = buscar_insumo_en_actual(df_actual, nom)
-            v_prev = prev["Stock Neto Calculado"] if prev is not None else 0.0
-            v_min  = limpiar_valor(row.get("Stock Mínimo", 0))
-
-            c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([2.2, 0.7, 0.7, 0.7, 0.7, 0.7, 1.0, 2.0])
-            with c1:
-                st.write(f"**{nom}**")
-                st.caption(f"Marca: {row.get('Marca','-')} | Prov: {row.get('Proveedor','-')}")
-                diff  = v_prev - v_min
-                color = "green" if diff >= 0 else "red"
-                st.markdown(
-                    f"<small>Anterior: {v_prev} | Mín: {v_min} "
-                    f"(<span style='color:{color}'>{diff:+.1f}</span>)</small>",
-                    unsafe_allow_html=True
-                )
-            with c2:
-                v_a = st.number_input(
-                    "Alm", min_value=0.0, step=1.0, value=None,
-                    key=f"a_{safe_nom}", label_visibility="collapsed",
-                    placeholder="0"
-                )
-                v_a = v_a if v_a is not None else 0.0
-            with c3:
-                v_b = st.number_input(
-                    "Bar", min_value=0.0, step=1.0, value=None,
-                    key=f"b_{safe_nom}", label_visibility="collapsed",
-                    placeholder="0"
-                )
-                v_b = v_b if v_b is not None else 0.0
-            with c4:
-                v_tara = st.number_input(
-                    "Tara", min_value=0.0, step=0.1, value=None,
-                    key=f"t_{safe_nom}", label_visibility="collapsed",
-                    placeholder="kg/gr",
-                    help="Peso del contenedor (tara). Se restará del total capturado."
-                )
-                v_tara = v_tara if v_tara is not None else 0.0
-            with c5:
-                u_act = str(row.get("Unidad de Medida", "pz")).lower()
-                v_u = st.selectbox(
-                    "U", UNIDADES_MED,
-                    index=UNIDADES_MED.index(u_act) if u_act in UNIDADES_MED else 0,
-                    key=f"u_{safe_nom}", label_visibility="collapsed"
-                )
-            with c6:
-                v_n = max(0.0, (v_a + v_b) - v_tara)
-                st.write(f"**{v_n:.1f}**")
-            with c7:
-                p_key       = f"p_{safe_nom}"
-                manual_key  = f"m_{safe_nom}"
-                last_math_k = f"lm_{safe_nom}"
-                if manual_key  not in st.session_state: st.session_state[manual_key]  = None
-                if last_math_k not in st.session_state: st.session_state[last_math_k] = None
-                math_val = bool(v_n < v_min)
-                if st.session_state[last_math_k] != math_val:
-                    st.session_state[manual_key]  = None
-                    st.session_state[last_math_k] = math_val
-
-                def make_cb(k, mk):
-                    def cb(): st.session_state[mk] = st.session_state[k]
-                    return cb
-
-                # Botón apagado por defecto — el barista lo activa manualmente
-                if p_key not in st.session_state:
-                    st.session_state[p_key] = False
-                if st.session_state[manual_key] is None:
-                    st.session_state[p_key] = False
-                v_p = st.toggle("🛒", key=p_key, on_change=make_cb(p_key, manual_key))
-            with c8:
-                v_c = st.text_input(
-                    "Nota...", key=f"c_{safe_nom}",
-                    label_visibility="collapsed", placeholder="Opcional"
-                )
-
-            regs[nom] = {
-                "a": v_a, "b": v_b, "n": v_n,
-                "u": v_u, "p": v_p, "c": v_c, "row": row
-            }
+        # ── CORRECCIÓN BUFFERING: envolver todo en st.form para evitar reruns
+        # en cada keystroke. Los valores solo se procesan al presionar submit.
+        # Esto elimina el "buffering" por rerun en cada input numérico.
+        with st.form("form_inventario", clear_on_submit=False):
+            # Encabezados
+            h1, h2, h3, h4, h5, h6, h7 = st.columns([2.8, 1.0, 1.0, 1.0, 1.0, 1.2, 2.5])
+            for col, label in zip(
+                [h1, h2, h3, h4, h5, h6, h7],
+                ["Insumo / Ref", "Almacén", "Barra", "Medida", "Neto*", "¿Pedir?", "Observaciones"]
+            ):
+                col.write(f"**{label}**")
+            st.markdown("*Neto = Alm + Barra − Tara guardada en catálogo")
             st.divider()
 
-        # CORRECCIÓN C: botón deshabilitado mientras se procesa
-        procesando = st.session_state.get("_procesando_inventario", False)
-        btn_inv = st.button(
-            "📥 PROCESAR INVENTARIO",
-            use_container_width=True,
-            type="primary",
-            disabled=procesando
-        )
+            regs_form = {}
+            for _, row in df_f.iterrows():
+                nom      = str(row.get("Nombre del Insumo", ""))
+                safe_nom = re.sub(r'[^a-zA-Z0-9]', '_', nom)[:40]
 
-        if btn_inv and not procesando:
-            st.session_state["_procesando_inventario"] = True
+                # CORRECCIÓN B: buscar con nombre normalizado
+                prev = buscar_insumo_en_actual(df_actual, nom)
+                v_prev = prev["Stock Neto Calculado"] if prev is not None else 0.0
+                v_min  = limpiar_valor(row.get("Stock Mínimo", 0))
+                # Tara guardada en el catálogo de Insumos
+                v_tara_cat = limpiar_valor(row.get("Tara", 0))
+
+                c1, c2, c3, c4, c5, c6, c7 = st.columns([2.8, 1.0, 1.0, 1.0, 1.0, 1.2, 2.5])
+                with c1:
+                    st.write(f"**{nom}**")
+                    st.caption(f"Marca: {row.get('Marca','-')} | Prov: {row.get('Proveedor','-')}")
+                    diff  = v_prev - v_min
+                    color = "green" if diff >= 0 else "red"
+                    tara_txt = f" | Tara: {v_tara_cat}" if v_tara_cat > 0 else ""
+                    st.markdown(
+                        f"<small>Anterior: {v_prev} | Mín: {v_min} "
+                        f"(<span style='color:{color}'>{diff:+.1f}</span>){tara_txt}</small>",
+                        unsafe_allow_html=True
+                    )
+                with c2:
+                    v_a = st.number_input(
+                        "Alm", min_value=0.0, step=1.0, value=0.0,
+                        key=f"a_{safe_nom}", label_visibility="collapsed",
+                    )
+                with c3:
+                    v_b = st.number_input(
+                        "Bar", min_value=0.0, step=1.0, value=0.0,
+                        key=f"b_{safe_nom}", label_visibility="collapsed",
+                    )
+                with c4:
+                    u_act = str(row.get("Unidad de Medida", "pz")).lower()
+                    v_u = st.selectbox(
+                        "U", UNIDADES_MED,
+                        index=UNIDADES_MED.index(u_act) if u_act in UNIDADES_MED else 0,
+                        key=f"u_{safe_nom}", label_visibility="collapsed"
+                    )
+                with c5:
+                    # Neto calculado usando tara del catálogo (no hay interacción, se muestra como texto)
+                    v_n_display = max(0.0, (v_a + v_b) - v_tara_cat)
+                    st.write(f"**{v_n_display:.1f}**")
+                with c6:
+                    v_p = st.toggle("🛒", key=f"p_{safe_nom}", value=False)
+                with c7:
+                    v_c = st.text_input(
+                        "Nota...", key=f"c_{safe_nom}",
+                        label_visibility="collapsed", placeholder="Opcional"
+                    )
+
+                regs_form[nom] = {
+                    "a": v_a, "b": v_b, "n": v_n_display,
+                    "u": v_u, "p": v_p, "c": v_c, "row": row
+                }
+                st.divider()
+
+            btn_inv = st.form_submit_button(
+                "📥 PROCESAR INVENTARIO",
+                use_container_width=True,
+                type="primary",
+            )
+
+        # Procesar fuera del form para evitar doble submit
+        if btn_inv:
             ws_his, err = safe_worksheet(sh, "Historial")
             if err:
                 st.error(err)
-                st.session_state["_procesando_inventario"] = False
             else:
                 fh    = ts_hermosillo()
                 filas = []
-                for n, info in regs.items():
+                for n, info in regs_form.items():
                     dm = info["row"]
                     filas.append([
                         u_sel, n,
@@ -1082,7 +1139,6 @@ elif pagina == "Inventario":
                         r_sel, fh, info["c"]
                     ])
                 ok, msg = append_rows_con_retry(ws_his, filas)
-                st.session_state["_procesando_inventario"] = False
                 if ok:
                     st.cache_data.clear()
                     st.success(f"¡Inventario registrado! {msg}")
@@ -1382,7 +1438,7 @@ elif pagina == "Consulta":
     )
 
 
-# ------ TICKETS ------
+# ------ LISTA DE CONTEO (PDF 58mm) ------
 elif pagina == "Impresion":
     df_raw, _ = cargar_datos_integrales()  # CORRECCIÓN E
     st.title("🖨️ Ticket de Conteo (58mm)")
@@ -1399,19 +1455,54 @@ elif pagina == "Impresion":
 
     if g_sel and not df_u.empty:
         df_p  = df_u[df_u["Grupo"].isin(g_sel)].sort_values(["Grupo", "Nombre del Insumo"])
-        t     = f"*** CONTEO {u_sel.upper()} ***\n"
-        t    += f"Fecha: {ahora_hermosillo().strftime('%d/%m/%Y')}\n"
-        t    += "-" * 22 + "\n"
+
+        # Construir líneas para PDF
+        lineas_pdf = []
+        lineas_pdf.append((f"* CONTEO {u_sel.upper()} *", "title"))
+        lineas_pdf.append((f"Fecha: {ahora_hermosillo().strftime('%d/%m/%Y')}", "small"))
+        lineas_pdf.append(("", "divider"))
+
+        gr_actual = ""
         for _, r in df_p.iterrows():
-            t += f" {str(r['Nombre del Insumo'])[:20]}\n"
-            t += " [   ] Alm [   ] Bar\n"
-            t += "-" * 22 + "\n"
-        st.info("Copia el texto para imprimir o enviar a la impresora térmica.")
-        st.code(t, language=None)
+            grupo = str(r.get("Grupo", ""))
+            if grupo != gr_actual:
+                lineas_pdf.append((f">> GRUPO {grupo} <<", "bold"))
+                gr_actual = grupo
+            nom = str(r['Nombre del Insumo'])[:22]
+            lineas_pdf.append((nom, "normal"))
+            lineas_pdf.append(("[    ] Alm   [    ] Bar", "small"))
+            lineas_pdf.append(("", "divider"))
+
+        # Previsualización de texto
+        with st.expander("👁️ Vista previa del contenido", expanded=True):
+            prev_txt = f"{'='*28}\n* CONTEO {u_sel.upper()} *\nFecha: {ahora_hermosillo().strftime('%d/%m/%Y')}\n{'-'*28}\n"
+            gr_actual_p = ""
+            for _, r in df_p.iterrows():
+                grupo = str(r.get("Grupo", ""))
+                if grupo != gr_actual_p:
+                    prev_txt += f"\n>> GRUPO {grupo} <<\n"
+                    gr_actual_p = grupo
+                prev_txt += f" {str(r['Nombre del Insumo'])[:22]}\n"
+                prev_txt += " [    ] Alm   [    ] Bar\n"
+                prev_txt += "-" * 28 + "\n"
+            st.code(prev_txt, language=None)
+
+        # Generar PDF y botón de descarga
+        pdf_bytes = generar_pdf_58mm(f"Conteo {u_sel}", lineas_pdf)
+        nombre_archivo = f"conteo_{u_sel.replace(' ','_')}_{ahora_hermosillo().strftime('%Y%m%d_%H%M')}.pdf"
+        st.download_button(
+            label="📄 Descargar PDF 58mm",
+            data=pdf_bytes,
+            file_name=nombre_archivo,
+            mime="application/pdf",
+            use_container_width=True,
+            type="primary"
+        )
     else:
         st.info("Selecciona grupos para generar la lista.")
 
 
+# ------ LISTA DE COMPRA (PDF 58mm) ------
 elif pagina == "ListaCompra":
     _, df_historial = cargar_datos_integrales()  # CORRECCIÓN E
     st.title("🛒 Ticket de Compra (58mm)")
@@ -1424,19 +1515,43 @@ elif pagina == "ListaCompra":
 
     com = df_actual[df_actual["Necesita Compra"] == True]
     if not com.empty:
-        t  = f"*** COMPRAS {u_sel.upper()} ***\n"
-        t += f"Fecha: {ahora_hermosillo().strftime('%d/%m/%Y')}\n"
-        t += "-" * 22 + "\n"
+        # Construir líneas para PDF
+        lineas_pdf = []
+        lineas_pdf.append((f"* COMPRAS {u_sel.upper()} *", "title"))
+        lineas_pdf.append((f"Fecha: {ahora_hermosillo().strftime('%d/%m/%Y')}", "small"))
+        lineas_pdf.append(("", "divider"))
+
         for _, r in com.iterrows():
-            t += f"• {str(r['Nombre del Insumo'])[:20]}\n"
-            t += f"  Stock: {r['Stock Neto Calculado']} / Min: {r['Stock Mínimo']}\n"
-            t += "-" * 22 + "\n"
-        st.info("Copia el texto para imprimir.")
-        st.code(t, language=None)
+            nom = str(r['Nombre del Insumo'])[:22]
+            lineas_pdf.append((f"* {nom}", "bold"))
+            lineas_pdf.append((f"  Stock:{r['Stock Neto Calculado']} Min:{r['Stock Mínimo']}", "small"))
+            lineas_pdf.append(("", "divider"))
+
+        # Previsualización
+        with st.expander("👁️ Vista previa del contenido", expanded=True):
+            prev_txt = f"{'='*28}\n* COMPRAS {u_sel.upper()} *\nFecha: {ahora_hermosillo().strftime('%d/%m/%Y')}\n{'-'*28}\n"
+            for _, r in com.iterrows():
+                prev_txt += f"• {str(r['Nombre del Insumo'])[:22]}\n"
+                prev_txt += f"  Stock: {r['Stock Neto Calculado']} / Min: {r['Stock Mínimo']}\n"
+                prev_txt += "-" * 28 + "\n"
+            st.code(prev_txt, language=None)
+
+        # PDF y descarga
+        pdf_bytes = generar_pdf_58mm(f"Compras {u_sel}", lineas_pdf)
+        nombre_archivo = f"compras_{u_sel.replace(' ','_')}_{ahora_hermosillo().strftime('%Y%m%d_%H%M')}.pdf"
+        st.download_button(
+            label="📄 Descargar PDF 58mm",
+            data=pdf_bytes,
+            file_name=nombre_archivo,
+            mime="application/pdf",
+            use_container_width=True,
+            type="primary"
+        )
     else:
         st.success("No hay alertas de reabastecimiento activas.")
 
 
+# ------ REPORTE DE STOCK (PDF 58mm) ------
 elif pagina == "ReporteStock":
     _, df_historial = cargar_datos_integrales()  # CORRECCIÓN E
     st.title("📦 Reporte de Stock (58mm)")
@@ -1447,22 +1562,52 @@ elif pagina == "ReporteStock":
         st.warning("Sin registros para generar el reporte.")
         st.stop()
 
-    t         = f"*** INVENTARIO {u_sel.upper()} ***\n"
-    t        += f"Fecha: {ahora_hermosillo().strftime('%d/%m/%Y %H:%M')}\n"
-    t        += "-" * 22 + "\n"
     col_grupo = "Grupo" if "Grupo" in df_actual.columns else "Grupo"
     df_rep    = df_actual.sort_values([col_grupo, "Nombre del Insumo"])
+
+    # Construir líneas para PDF
+    lineas_pdf = []
+    lineas_pdf.append((f"* INVENTARIO {u_sel.upper()} *", "title"))
+    lineas_pdf.append((ahora_hermosillo().strftime('%d/%m/%Y %H:%M'), "small"))
+    lineas_pdf.append(("", "divider"))
+
     gr_actual = ""
     for _, r in df_rep.iterrows():
         grupo = str(r.get(col_grupo, ""))
         if grupo != gr_actual:
-            t        += f"\n>> GRUPO {grupo} <<\n"
+            lineas_pdf.append((f">> GRUPO {grupo} <<", "bold"))
             gr_actual = grupo
-        t += f"{str(r['Nombre del Insumo'])[:20]}\n"
-        t += f" Alm:{r['Alm']} Bar:{r['Barra']} Total:{r['Stock Neto Calculado']}\n"
-    t += "-" * 22 + "\n"
-    st.info("Copia el texto para imprimir.")
-    st.code(t, language=None)
+        nom = str(r['Nombre del Insumo'])[:20]
+        lineas_pdf.append((nom, "normal"))
+        lineas_pdf.append((f" Alm:{r['Alm']} Bar:{r['Barra']} Tot:{r['Stock Neto Calculado']}", "small"))
+
+    lineas_pdf.append(("", "divider"))
+
+    # Previsualización
+    with st.expander("👁️ Vista previa del contenido", expanded=True):
+        prev_txt = f"{'='*28}\n* INVENTARIO {u_sel.upper()} *\n{ahora_hermosillo().strftime('%d/%m/%Y %H:%M')}\n{'-'*28}\n"
+        gr_actual_p = ""
+        for _, r in df_rep.iterrows():
+            grupo = str(r.get(col_grupo, ""))
+            if grupo != gr_actual_p:
+                prev_txt += f"\n>> GRUPO {grupo} <<\n"
+                gr_actual_p = grupo
+            prev_txt += f"{str(r['Nombre del Insumo'])[:20]}\n"
+            prev_txt += f" Alm:{r['Alm']} Bar:{r['Barra']} Total:{r['Stock Neto Calculado']}\n"
+        prev_txt += "-" * 28 + "\n"
+        st.code(prev_txt, language=None)
+
+    # PDF y descarga
+    pdf_bytes = generar_pdf_58mm(f"Stock {u_sel}", lineas_pdf)
+    nombre_archivo = f"stock_{u_sel.replace(' ','_')}_{ahora_hermosillo().strftime('%Y%m%d_%H%M')}.pdf"
+    st.download_button(
+        label="📄 Descargar PDF 58mm",
+        data=pdf_bytes,
+        file_name=nombre_archivo,
+        mime="application/pdf",
+        use_container_width=True,
+        type="primary"
+    )
 
 
 # ------ CORTE DE MES ------
