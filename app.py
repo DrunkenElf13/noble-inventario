@@ -8,9 +8,13 @@ import calendar
 import unicodedata
 import re
 import io
-from reportlab.lib.pagesizes import landscape
-from reportlab.pdfgen import canvas as rl_canvas
-from reportlab.lib.units import mm
+try:
+    from reportlab.lib.pagesizes import landscape
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.lib.units import mm
+    REPORTLAB_OK = True
+except ImportError:
+    REPORTLAB_OK = False
 
 st.set_page_config(layout="wide")
 
@@ -246,6 +250,8 @@ def liberar_doble_envio(key: str):
 # GENERADOR DE PDF 58mm
 # ============================================================
 def generar_pdf_58mm(titulo: str, lineas: list) -> bytes:
+    if not REPORTLAB_OK:
+        raise RuntimeError("reportlab no está instalado. Agrégalo a requirements.txt.")
     """
     Genera un PDF con ancho de 58mm (rollo térmico).
     lineas: lista de strings o tuplas (texto, estilo) donde estilo puede ser
