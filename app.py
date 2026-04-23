@@ -1140,9 +1140,10 @@ elif pagina == "Inventario":
 
             btn_inv = st.form_submit_button(
                 "📥 PROCESAR INVENTARIO",
-                use_container_width=True,
-                type="primary",
-            )
+    use_container_width=True,
+    type="primary",
+    key="btn_procesar_inventario_unique"  # Agrega una clave única aquí
+)
 
         # Procesar fuera del form para evitar doble submit
         if btn_inv:
