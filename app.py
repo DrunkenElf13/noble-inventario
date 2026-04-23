@@ -8,6 +8,7 @@ import calendar
 import unicodedata
 import re
 import io
+
 try:
     from reportlab.lib.pagesizes import landscape
     from reportlab.pdfgen import canvas as rl_canvas
@@ -250,14 +251,15 @@ def liberar_doble_envio(key: str):
 # GENERADOR DE PDF 58mm
 # ============================================================
 def generar_pdf_58mm(titulo: str, lineas: list) -> bytes:
-    if not REPORTLAB_OK:
-        raise RuntimeError("reportlab no está instalado. Agrégalo a requirements.txt.")
     """
     Genera un PDF con ancho de 58mm (rollo térmico).
     lineas: lista de strings o tuplas (texto, estilo) donde estilo puede ser
             'normal', 'bold', 'small', 'divider'
     Retorna bytes del PDF.
     """
+    if not REPORTLAB_OK:
+        raise RuntimeError("reportlab no está instalado. Agrégalo a requirements.txt.")
+
     ANCHO_MM = 58
     MARGEN_MM = 3
     LINEA_H_MM = 4.2
@@ -1049,20 +1051,30 @@ elif pagina == "Inventario":
         # en cada keystroke. Los valores solo se procesan al presionar submit.
         # Esto elimina el "buffering" por rerun en cada input numérico.
         with st.form("form_inventario", clear_on_submit=False):
-            # Encabezados
-            h1, h2, h3, h4, h5, h6, h7 = st.columns([2.8, 1.0, 1.0, 1.0, 1.0, 1.2, 2.5])
+            # Encabezados — 8 columnas con tara visible
+            h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([2.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.2, 2.5])
             for col, label in zip(
-                [h1, h2, h3, h4, h5, h6, h7],
-                ["Insumo / Ref", "Almacén", "Barra", "Medida", "Neto*", "¿Pedir?", "Observaciones"]
+                [h1, h2, h3, h4, h5, h6, h7, h8],
+                ["Insumo / Ref", "Almacén", "Barra", "Medida", "Tara (gr)", "Neto*", "¿Pedir?", "Observaciones"]
             ):
                 col.write(f"**{label}**")
-            st.markdown("*Neto = Alm + Barra − Tara guardada en catálogo")
+            st.markdown("*Neto = Alm + Barra − Tara (puedes ajustar la tara por conteo)")
+
+            # Submit button al inicio como ancla de detección para Streamlit
+            st.form_submit_button(
+                "📥 PROCESAR INVENTARIO",
+                use_container_width=True,
+                type="primary",
+                disabled=True,
+            )
+
             st.divider()
 
             regs_form = {}
-            for _, row in df_f.iterrows():
+            for idx_row, row in df_f.iterrows():
                 nom      = str(row.get("Nombre del Insumo", ""))
-                safe_nom = re.sub(r'[^a-zA-Z0-9]', '_', nom)[:40]
+                # FIX DuplicateElementKey: incluir idx_row en el key para garantizar unicidad
+                safe_nom = re.sub(r'[^a-zA-Z0-9]', '_', nom)[:35] + f"_{idx_row}"
 
                 # CORRECCIÓN B: buscar con nombre normalizado
                 prev = buscar_insumo_en_actual(df_actual, nom)
@@ -1071,13 +1083,13 @@ elif pagina == "Inventario":
                 # Tara guardada en el catálogo de Insumos
                 v_tara_cat = limpiar_valor(row.get("Tara", 0))
 
-                c1, c2, c3, c4, c5, c6, c7 = st.columns([2.8, 1.0, 1.0, 1.0, 1.0, 1.2, 2.5])
+                c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([2.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.2, 2.5])
                 with c1:
                     st.write(f"**{nom}**")
                     st.caption(f"Marca: {row.get('Marca','-')} | Prov: {row.get('Proveedor','-')}")
                     diff  = v_prev - v_min
                     color = "green" if diff >= 0 else "red"
-                    tara_txt = f" | Tara: {v_tara_cat}" if v_tara_cat > 0 else ""
+                    tara_txt = f" | Tara cat: {v_tara_cat}" if v_tara_cat > 0 else ""
                     st.markdown(
                         f"<small>Anterior: {v_prev} | Mín: {v_min} "
                         f"(<span style='color:{color}'>{diff:+.1f}</span>){tara_txt}</small>",
@@ -1101,12 +1113,20 @@ elif pagina == "Inventario":
                         key=f"u_{safe_nom}", label_visibility="collapsed"
                     )
                 with c5:
-                    # Neto calculado usando tara del catálogo (no hay interacción, se muestra como texto)
-                    v_n_display = max(0.0, (v_a + v_b) - v_tara_cat)
-                    st.write(f"**{v_n_display:.1f}**")
+                    # Tara editable por conteo, pre-cargada del catálogo
+                    v_tara_manual = st.number_input(
+                        "Tara", min_value=0.0, step=0.1, value=v_tara_cat,
+                        key=f"tara_{safe_nom}",
+                        label_visibility="collapsed",
+                        help="Tara del contenedor en la misma unidad. Pre-cargada del catálogo, ajustable."
+                    )
                 with c6:
-                    v_p = st.toggle("🛒", key=f"p_{safe_nom}", value=False)
+                    # Neto calculado usando tara editable
+                    v_n_display = max(0.0, (v_a + v_b) - v_tara_manual)
+                    st.write(f"**{v_n_display:.1f}**")
                 with c7:
+                    v_p = st.toggle("🛒", key=f"p_{safe_nom}", value=False)
+                with c8:
                     v_c = st.text_input(
                         "Nota...", key=f"c_{safe_nom}",
                         label_visibility="collapsed", placeholder="Opcional"
