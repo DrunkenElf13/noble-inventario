@@ -8,6 +8,7 @@ import calendar
 import unicodedata
 import re
 import io
+from reportlab.lib.pagesizes import landscape
 from reportlab.pdfgen import canvas as rl_canvas
 from reportlab.lib.units import mm
 
