@@ -39,10 +39,6 @@ COLS_INSUMOS = [
     "Stock Mínimo",           # L
     "Tara",                   # M — peso de tara del contenedor
 ]
-# CAMBIO 1 (TARA): Se agrega "Tara" a COLS_HISTORIAL para persistirla en el Sheet.
-# Posición P (índice 15) — columna nueva. Observaciones pasa a Q.
-# Compatibilidad: normalizar_dataframe() rellena con None si la columna
-# no existe aún en el Sheet (registros históricos sin Tara → tratados como 0).
 COLS_HISTORIAL = [
     "Unidad de Negocio",      # A
     "Nombre del Insumo",      # B
@@ -59,8 +55,7 @@ COLS_HISTORIAL = [
     "¿Comprar?",              # M  — nombre real en el Sheet
     "Responsable",            # N
     "Fecha de Inventario",    # O
-    "Tara",                   # P  — NUEVO: tara guardada para trazabilidad
-    "Observaciones",          # Q  — se desplaza una columna
+    "Observaciones",          # P  — nombre real en el Sheet
 ]
 COLS_ACCESOS    = ["Clave", "Nombre", "Rol"]
 
@@ -169,9 +164,6 @@ def normalizar_dataframe(df: pd.DataFrame, columnas_esperadas: list,
     - Columnas extra en el Sheet: se ignoran (no corrompen datos).
 
     Esta función es inmune a reorganizaciones de columnas en el Sheet.
-    CAMBIO 2 (TARA): cuando el Sheet histórico no tiene columna "Tara"
-    (registros anteriores a v4), normalizar_dataframe la crea como None,
-    y limpiar_valor() la interpreta como 0.0. Sin ruptura de datos históricos.
     """
     if df.empty:
         return pd.DataFrame(columns=columnas_esperadas)
@@ -416,7 +408,7 @@ def cargar_datos_integrales():
             #            Stock Mínimo, Tara.
             # Historial → fuente de verdad para: Alm, Barra, Stock Neto,
             #             ¿Comprar?, Responsable, Fecha de Inventario,
-            #             Tara (valor capturado en ese conteo), Observaciones.
+            #             Observaciones.
             # El join se hace por nombre normalizado + Unidad de Negocio
             # para ser inmune a diferencias de acentos o espacios.
             if not df_ins.empty:
@@ -448,13 +440,7 @@ def cargar_datos_integrales():
                     df_total["Unidad de Negocio"].fillna("") + "||" + df_total["_nom_norm"]
                 )
 
-                # CAMBIO 3 (TARA): "Tara" del historial se preserva como valor
-                # registrado en ese conteo específico. El merge trae "Tara" del
-                # catálogo como "Tara_cat" (sufijo _y del merge), y la del
-                # historial como "Tara" (sufijo _x). Después del merge se resuelve:
-                # si el historial tiene tara válida (> 0) se usa esa; si no, se
-                # usa la del catálogo. Esto garantiza trazabilidad de conteos
-                # históricos sin perder el valor real capturado.
+                # Columnas de cifras que el historial conserva intactas
                 COLS_CIFRAS = [
                     "_clave",
                     "Unidad de Negocio",
@@ -465,32 +451,19 @@ def cargar_datos_integrales():
                     "Responsable",
                     "Fecha de Inventario",
                     "Fecha de Entrada",
-                    "Tara",          # CAMBIO 3: incluir Tara del historial en cifras
                     "Observaciones",
                 ]
                 cols_cifras_ok = [c for c in COLS_CIFRAS if c in df_total.columns]
                 df_cifras = df_total[cols_cifras_ok].copy()
 
                 # Merge: historial (cifras) LEFT JOIN insumos (estáticos)
-                # suffixes: _x = historial, _y = catálogo
                 df_total = df_cifras.merge(
                     df_ins_m,
                     on="_clave",
                     how="left",
-                    suffixes=("_hist", "_cat"),
                 )
-
-                # CAMBIO 3 (cont.): resolver columna Tara final
-                # Prioridad: valor del historial si es > 0; si no, usar catálogo.
-                tara_hist = df_total.get("Tara_hist", pd.Series(0.0, index=df_total.index))
-                tara_cat  = df_total.get("Tara_cat",  df_total.get("Tara", pd.Series(0.0, index=df_total.index)))
-                tara_hist_clean = tara_hist.apply(limpiar_valor)
-                tara_cat_clean  = tara_cat.apply(limpiar_valor)
-                df_total["Tara"] = tara_hist_clean.where(tara_hist_clean > 0, tara_cat_clean)
-
-                # Limpiar columnas de sufijo que ya no se necesitan
                 df_total.drop(
-                    columns=["Tara_hist", "Tara_cat", "_clave", "_nom_norm"],
+                    columns=["_clave", "_nom_norm"],
                     inplace=True, errors="ignore"
                 )
             # ─────────────────────────────────────────────────────────────────
@@ -588,13 +561,6 @@ def obtener_ultimo_inventario(df_hist: pd.DataFrame, unidad: str = None) -> pd.D
     for col in ["Alm", "Barra", "Stock Neto", "Stock Mínimo"]:
         df_actual[col] = df_actual[col].apply(limpiar_valor)
 
-    # CAMBIO 4 (TARA): limpiar Tara del inventario actual de la misma forma
-    # que el resto de columnas numéricas. Valores None/vacíos → 0.0.
-    if "Tara" in df_actual.columns:
-        df_actual["Tara"] = df_actual["Tara"].apply(limpiar_valor)
-    else:
-        df_actual["Tara"] = 0.0
-
     df_actual["Stock Neto Calculado"] = df_actual["Alm"] + df_actual["Barra"]
 
     if "¿Comprar?" in df_actual.columns:
@@ -633,60 +599,6 @@ def buscar_insumo_en_actual(df_actual: pd.DataFrame, nombre: str) -> pd.Series:
     if not mascaras.any():
         return None
     return df_actual[mascaras].iloc[0]
-
-
-# ============================================================
-# FUNCIÓN AUXILIAR: construir fila para Historial
-# CAMBIO 5 (TARA): centraliza la construcción de filas del historial.
-# Todas las secciones que escriben al Sheet usan esta función,
-# garantizando que Tara siempre quede en la posición correcta
-# (columna P) y que el orden de columnas sea consistente con
-# COLS_HISTORIAL. Evita duplicación de lógica y errores de
-# indexación al agregar/mover columnas en el futuro.
-# ============================================================
-def construir_fila_historial(
-    unidad: str,
-    nombre: str,
-    marca: str,
-    proveedor: str,
-    grupo: str,
-    fecha_entrada: str,
-    presentacion: str,
-    unidad_medida: str,
-    alm: float,
-    barra: float,
-    stock_neto: float,
-    stock_minimo: float,
-    comprar: bool,
-    responsable: str,
-    fecha_inventario: str,
-    tara: float,
-    observaciones: str,
-) -> list:
-    """
-    Construye una fila lista para append_rows_con_retry().
-    El orden sigue exactamente COLS_HISTORIAL (incluyendo Tara en posición P).
-    Cualquier cambio futuro a COLS_HISTORIAL debe reflejarse aquí.
-    """
-    return [
-        unidad,
-        nombre,
-        marca,
-        proveedor,
-        grupo,
-        fecha_entrada,
-        presentacion,
-        unidad_medida,
-        alm,
-        barra,
-        stock_neto,
-        stock_minimo,
-        "TRUE" if comprar else "FALSE",
-        responsable,
-        fecha_inventario,
-        max(0.0, limpiar_valor(tara)),   # Tara nunca negativa
-        observaciones,
-    ]
 
 
 # ============================================================
@@ -1148,6 +1060,14 @@ elif pagina == "Inventario":
                 col.write(f"**{label}**")
             st.markdown("*Neto = Alm + Barra − Tara (puedes ajustar la tara por conteo)")
 
+            # Submit button al inicio como ancla de detección para Streamlit
+            st.form_submit_button(
+                "📥 PROCESAR INVENTARIO",
+                use_container_width=True,
+                type="primary",
+                disabled=True,
+            )
+
             st.divider()
 
             regs_form = {}
@@ -1212,23 +1132,18 @@ elif pagina == "Inventario":
                         label_visibility="collapsed", placeholder="Opcional"
                     )
 
-                # CAMBIO 6 (TARA): guardar v_tara_manual en regs_form para persistirla
                 regs_form[nom] = {
                     "a": v_a, "b": v_b, "n": v_n_display,
-                    "u": v_u, "p": v_p, "c": v_c,
-                    "tara": v_tara_manual,   # NUEVO
-                    "row": row
+                    "u": v_u, "p": v_p, "c": v_c, "row": row
                 }
                 st.divider()
 
-            # CORRECCIÓN botón único: se elimina el botón desactivado superior.
-            # Un solo form_submit_button por formulario evita el error de Streamlit.
             btn_inv = st.form_submit_button(
                 "📥 PROCESAR INVENTARIO",
-                use_container_width=True,
-                type="primary",
-                key="btn_procesar_inventario_unique"
-            )
+    use_container_width=True,
+    type="primary",
+    key="btn_procesar_inventario_unique"  # Agrega una clave única aquí
+)
 
         # Procesar fuera del form para evitar doble submit
         if btn_inv:
@@ -1240,27 +1155,16 @@ elif pagina == "Inventario":
                 filas = []
                 for n, info in regs_form.items():
                     dm = info["row"]
-                    # CAMBIO 6 (cont.): usar construir_fila_historial() para
-                    # garantizar que Tara quede en la columna P del Sheet.
-                    filas.append(construir_fila_historial(
-                        unidad          = u_sel,
-                        nombre          = n,
-                        marca           = dm.get("Marca", ""),
-                        proveedor       = dm.get("Proveedor", ""),
-                        grupo           = dm.get("Grupo", ""),
-                        fecha_entrada   = "",
-                        presentacion    = dm.get("Presentación de Compra", ""),
-                        unidad_medida   = info["u"],
-                        alm             = info["a"],
-                        barra           = info["b"],
-                        stock_neto      = info["n"],
-                        stock_minimo    = dm.get("Stock Mínimo", 0),
-                        comprar         = info["p"],
-                        responsable     = r_sel,
-                        fecha_inventario= fh,
-                        tara            = info["tara"],   # NUEVO
-                        observaciones   = info["c"],
-                    ))
+                    filas.append([
+                        u_sel, n,
+                        dm.get("Marca", ""),    dm.get("Proveedor", ""),
+                        dm.get("Grupo", ""),    "",
+                        dm.get("Presentación de Compra", ""), info["u"],
+                        info["a"], info["b"],   info["n"],
+                        dm.get("Stock Mínimo", 0),
+                        "TRUE" if info["p"] else "FALSE",
+                        r_sel, fh, info["c"]
+                    ])
                 ok, msg = append_rows_con_retry(ws_his, filas)
                 if ok:
                     st.cache_data.clear()
@@ -1359,30 +1263,17 @@ elif pagina == "Ingresos":
                         continue
                     row_ins = row_matches.iloc[0]
                     v_min   = limpiar_valor(row_ins.get("Stock Mínimo", 0))
-                    # CAMBIO 7 (TARA): bulk no captura tara individual;
-                    # se usa la del catálogo como referencia para el registro.
-                    tara_bulk = limpiar_valor(row_ins.get("Tara", 0))
-                    nuevo_a   = orig["Stock Alm"] + ingreso
-                    nuevo_n   = nuevo_a + orig["Stock Barra"]
-                    filas_bulk.append(construir_fila_historial(
-                        unidad          = u_sel,
-                        nombre          = nom,
-                        marca           = row_ins.get("Marca", ""),
-                        proveedor       = row_ins.get("Proveedor", ""),
-                        grupo           = row_ins.get("Grupo", ""),
-                        fecha_entrada   = fh,
-                        presentacion    = row_ins.get("Presentación de Compra", ""),
-                        unidad_medida   = row_ins.get("Unidad de Medida", "pz"),
-                        alm             = nuevo_a,
-                        barra           = orig["Stock Barra"],
-                        stock_neto      = nuevo_n,
-                        stock_minimo    = v_min,
-                        comprar         = nuevo_n < v_min,
-                        responsable     = r_sel,
-                        fecha_inventario= "",
-                        tara            = tara_bulk,   # NUEVO
-                        observaciones   = "",
-                    ))
+                    nuevo_a = orig["Stock Alm"] + ingreso
+                    nuevo_n = nuevo_a + orig["Stock Barra"]
+                    filas_bulk.append([
+                        u_sel, nom,
+                        row_ins.get("Marca", ""),    row_ins.get("Proveedor", ""),
+                        row_ins.get("Grupo", ""),    fh,
+                        row_ins.get("Presentación de Compra", ""),
+                        row_ins.get("Unidad de Medida", "pz"),
+                        nuevo_a, orig["Stock Barra"], nuevo_n, v_min,
+                        "TRUE" if nuevo_n < v_min else "FALSE", r_sel, "", ""
+                    ])
 
                 st.session_state["_procesando_bulk"] = False
                 if not filas_bulk:
@@ -1452,11 +1343,9 @@ elif pagina == "Ingresos":
                     nuevo_neto = nuevo_alm + v_b_prev
                     st.success(f"**{nuevo_neto:.1f}**")
 
-                # CAMBIO 8 (TARA): guardar tara_ingreso en regs_ingreso para persistirla
                 regs_ingreso[nom] = {
                     "nuevo_a": nuevo_alm, "b": v_b_prev,
-                    "nuevo_n": nuevo_neto, "row": row_ins, "min": v_min,
-                    "tara": tara_ingreso,   # NUEVO
+                    "nuevo_n": nuevo_neto, "row": row_ins, "min": v_min
                 }
                 st.divider()
 
@@ -1478,27 +1367,17 @@ elif pagina == "Ingresos":
                     filas = []
                     for n, info in regs_ingreso.items():
                         dm = info["row"]
-                        # CAMBIO 8 (cont.): usar construir_fila_historial()
-                        # para incluir Tara en columna P.
-                        filas.append(construir_fila_historial(
-                            unidad          = u_sel,
-                            nombre          = n,
-                            marca           = dm.get("Marca", ""),
-                            proveedor       = dm.get("Proveedor", ""),
-                            grupo           = dm.get("Grupo", ""),
-                            fecha_entrada   = fh,
-                            presentacion    = dm.get("Presentación de Compra", ""),
-                            unidad_medida   = dm.get("Unidad de Medida", "pz"),
-                            alm             = info["nuevo_a"],
-                            barra           = info["b"],
-                            stock_neto      = info["nuevo_n"],
-                            stock_minimo    = info["min"],
-                            comprar         = info["nuevo_n"] < info["min"],
-                            responsable     = r_sel,
-                            fecha_inventario= "",
-                            tara            = info["tara"],   # NUEVO
-                            observaciones   = "",
-                        ))
+                        filas.append([
+                            u_sel, n,
+                            dm.get("Marca", ""),   dm.get("Proveedor", ""),
+                            dm.get("Grupo", ""),   fh,
+                            dm.get("Presentación de Compra", ""),
+                            dm.get("Unidad de Medida", "pz"),
+                            info["nuevo_a"], info["b"], info["nuevo_n"],
+                            info["min"],
+                            "TRUE" if info["nuevo_n"] < info["min"] else "FALSE",
+                            r_sel, "", ""
+                        ])
                     ok, msg = append_rows_con_retry(ws_his, filas)
                     st.session_state["_procesando_ingreso"] = False
                     if ok:
@@ -1556,7 +1435,6 @@ elif pagina == "Consulta":
         "Alm":                 "Almacén",
         "Barra":               "Barra",
         "Stock Neto Calculado":"Stock Total",
-        "Tara":                "Tara",        # CAMBIO 9 (TARA): mostrar Tara en vista
         "Unidad de Medida":     "Medida",
         "Stock Mínimo":        "Mínimo",
         "Necesita Compra":     "¿Comprar?",
@@ -1793,27 +1671,16 @@ elif pagina == "CorteMes":
 
                 filas_corte = []
                 for _, r in df_corte.iterrows():
-                    # CAMBIO 10 (TARA): incluir Tara en el consolidado de cierre
-                    # para que el saldo inicial del siguiente mes preserve la tara.
-                    filas_corte.append(construir_fila_historial(
-                        unidad          = r.get("Unidad de Negocio", ""),
-                        nombre          = r.get("Nombre del Insumo", ""),
-                        marca           = r.get("Marca", ""),
-                        proveedor       = r.get(col_prov, ""),
-                        grupo           = r.get(col_grupo, ""),
-                        fecha_entrada   = "",
-                        presentacion    = r.get("Presentación de Compra", ""),
-                        unidad_medida   = r.get("Unidad de Medida", ""),
-                        alm             = r.get("Alm", 0),
-                        barra           = r.get("Barra", 0),
-                        stock_neto      = r.get("Stock Neto Calculado", 0),
-                        stock_minimo    = r.get("Stock Mínimo", 0),
-                        comprar         = bool(r.get("Necesita Compra", False)),
-                        responsable     = "SISTEMA-CIERRE",
-                        fecha_inventario= fh,
-                        tara            = r.get("Tara", 0),   # NUEVO
-                        observaciones   = "Corte consolidado",
-                    ))
+                    filas_corte.append([
+                        r.get("Unidad de Negocio", ""), r.get("Nombre del Insumo", ""),
+                        r.get("Marca", ""),            r.get(col_prov, ""),
+                        r.get(col_grupo, ""),            "",
+                        r.get("Presentación de Compra", ""),      r.get("Unidad de Medida", ""),
+                        r.get("Alm", 0),                 r.get("Barra", 0),
+                        r.get("Stock Neto Calculado", 0), r.get("Stock Mínimo", 0),
+                        "TRUE" if r.get("Necesita Compra", False) else "FALSE",
+                        "SISTEMA-CIERRE", fh, "Corte consolidado"
+                    ])
 
                 # PASO 2 — Archivar historial ANTES de limpiar (protege datos)
                 st.write("2/4 — Archivando historial previo...")
