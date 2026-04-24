@@ -1190,10 +1190,10 @@ elif pagina == "Inventario":
             h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([2.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.2, 2.5])
             for col, label in zip(
                 [h1, h2, h3, h4, h5, h6, h7, h8],
-                ["Insumo / Ref", "Almacén", "Barra", "Medida", "Tara (gr)", "Neto*", "¿Pedir?", "Observaciones"]
+                ["Insumo / Ref", "Almacén", "Barra (bruto)", "Medida", "Tara (gr)", "Neto*", "¿Pedir?", "Observaciones"]
             ):
                 col.write(f"**{label}**")
-            st.markdown("*Neto = Alm + Barra − Tara (puedes ajustar la tara por conteo)")
+            st.markdown("*Neto = Alm + (Barra − Tara). La Tara se descuenta solo de Barra. Se guarda Barra neta en Sheets.")
 
             st.divider()
 
@@ -1264,8 +1264,9 @@ elif pagina == "Inventario":
                         help="Tara del contenedor. Pre-cargada del último conteo (o catálogo si es nuevo)."
                     )
                 with c6:
-                    # Neto calculado usando tara editable
-                    v_n_display = max(0.0, (v_a + v_b) - v_tara_manual)
+                    # Tara aplica SOLO a Barra (el contenedor está en barra, no en almacén)
+                    v_b_neto    = max(0.0, v_b - v_tara_manual)
+                    v_n_display = v_a + v_b_neto
                     st.write(f"**{v_n_display:.1f}**")
                 with c7:
                     # ¿Comprar?: precargar desde historial solo si el widget no existe
@@ -1287,8 +1288,9 @@ elif pagina == "Inventario":
                     )
 
                 # Guardar todos los valores capturados — incluyendo Tara y Observaciones
+                # "b" guarda el NETO de Barra (ya descontada la tara) para columna J
                 regs_form[nom] = {
-                    "a": v_a, "b": v_b, "n": v_n_display,
+                    "a": v_a, "b": v_b_neto, "n": v_n_display,
                     "u": v_u, "p": v_p, "c": v_c,
                     "tara": v_tara_manual,
                     "row": row
