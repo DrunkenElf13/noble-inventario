@@ -357,9 +357,11 @@ sh = conectar_google_sheets()
 # ============================================================
 def _migrar_encabezado_tara():
     """
-    Verifica que la fila de encabezados de Historial y Cierres
-    incluya "Tara" en la posición correcta (índice 15, columna P).
-    Si no existe, lo inserta sin tocar los datos existentes.
+    Verifica que la fila de encabezados de Historial, Cierres e Insumos
+    incluya "Tara" en la posición correcta.
+      - Historial / Cierres → columna P (índice 15)
+      - Insumos             → columna Q (índice 16)
+    Si no existe, escribe el encabezado sin tocar los datos existentes.
     Se ejecuta una vez por sesión (controlado por session_state).
     """
     if sh is None:
@@ -367,8 +369,9 @@ def _migrar_encabezado_tara():
     if st.session_state.get("_tara_migrada", False):
         return
 
-    IDX_TARA = COLS_HISTORIAL.index("Tara")   # = 15 → columna P (1-indexed = 16)
-    col_letra = chr(ord("A") + IDX_TARA)      # = "P"
+    # ── Historial y Cierres: Tara en columna P (índice 15) ──
+    IDX_TARA_HIS = COLS_HISTORIAL.index("Tara")        # = 15 → "P"
+    col_his = chr(ord("A") + IDX_TARA_HIS)             # = "P"
 
     for hoja in ("Historial", "Cierres"):
         ws, err = safe_worksheet(sh, hoja)
@@ -377,12 +380,22 @@ def _migrar_encabezado_tara():
         try:
             encabezados = ws.row_values(1)
             if "Tara" not in encabezados:
-                # Insertar "Tara" en la celda P1 — no desplaza columnas,
-                # solo escribe el encabezado en la celda que ya existe
-                # (las filas de datos tendrán esa celda vacía = 0.0 al leer).
-                ws.update(range_name=f"{col_letra}1", values=[["Tara"]])
+                ws.update(range_name=f"{col_his}1", values=[["Tara"]])
         except Exception:
-            pass  # Si falla la migración, el sistema sigue funcionando; solo omite tara
+            pass
+
+    # ── Insumos: Tara en columna Q (índice 16) ──
+    IDX_TARA_INS = COLS_INSUMOS.index("Tara")          # = 16 → "Q"
+    col_ins = chr(ord("A") + IDX_TARA_INS)             # = "Q"
+
+    ws_ins, err_ins = safe_worksheet(sh, "Insumos")
+    if ws_ins is not None:
+        try:
+            encabezados_ins = ws_ins.row_values(1)
+            if "Tara" not in encabezados_ins:
+                ws_ins.update(range_name=f"{col_ins}1", values=[["Tara"]])
+        except Exception:
+            pass
 
     st.session_state["_tara_migrada"] = True
 
