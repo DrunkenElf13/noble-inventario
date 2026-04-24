@@ -1210,8 +1210,11 @@ elif pagina == "Inventario":
                 v_alm_prev  = limpiar_valor(prev["Alm"])   if prev is not None else 0.0
                 v_bar_prev  = limpiar_valor(prev["Barra"]) if prev is not None else 0.0
                 v_min       = limpiar_valor(row.get("Stock Mínimo", 0))
-                # Tara guardada en el catálogo de Insumos
+                # Tara: prioridad al último conteo del historial (igual que Alm/Barra).
+                # Fallback al catálogo de Insumos si el historial no tiene valor.
+                v_tara_hist = limpiar_valor(prev.get("Tara", 0)) if prev is not None else 0.0
                 v_tara_cat  = limpiar_valor(row.get("Tara", 0))
+                v_tara_init = v_tara_hist if v_tara_hist > 0 else v_tara_cat
 
                 c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([2.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.2, 2.5])
                 with c1:
@@ -1219,23 +1222,27 @@ elif pagina == "Inventario":
                     st.caption(f"Marca: {row.get('Marca','-')} | Prov: {row.get('Proveedor','-')}")
                     diff  = v_prev - v_min
                     color = "green" if diff >= 0 else "red"
-                    tara_txt = f" | Tara cat: {v_tara_cat}" if v_tara_cat > 0 else ""
+                    tara_txt = f" | Tara: {v_tara_init}" if v_tara_init > 0 else ""
                     st.markdown(
                         f"<small>Anterior: {v_prev} | Mín: {v_min} "
                         f"(<span style='color:{color}'>{diff:+.1f}</span>){tara_txt}</small>",
                         unsafe_allow_html=True
                     )
                 with c2:
-                    # FIX UI: value=v_alm_prev para iniciar con el último conteo registrado
+                    alm_key = f"a_{safe_nom}"
+                    if alm_key not in st.session_state:
+                        st.session_state[alm_key] = v_alm_prev
                     v_a = st.number_input(
-                        "Alm", min_value=0.0, step=1.0, value=v_alm_prev,
-                        key=f"a_{safe_nom}", label_visibility="collapsed",
+                        "Alm", min_value=0.0, step=1.0,
+                        key=alm_key, label_visibility="collapsed",
                     )
                 with c3:
-                    # FIX UI: value=v_bar_prev para iniciar con el último conteo registrado
+                    bar_key = f"b_{safe_nom}"
+                    if bar_key not in st.session_state:
+                        st.session_state[bar_key] = v_bar_prev
                     v_b = st.number_input(
-                        "Bar", min_value=0.0, step=1.0, value=v_bar_prev,
-                        key=f"b_{safe_nom}", label_visibility="collapsed",
+                        "Bar", min_value=0.0, step=1.0,
+                        key=bar_key, label_visibility="collapsed",
                     )
                 with c4:
                     u_act = str(row.get("Unidad de Medida", "pz")).lower()
@@ -1245,12 +1252,16 @@ elif pagina == "Inventario":
                         key=f"u_{safe_nom}", label_visibility="collapsed"
                     )
                 with c5:
-                    # Tara editable por conteo, pre-cargada del catálogo
+                    # Tara editable por conteo.
+                    # Se pre-carga desde el último historial; si no hay, desde el catálogo.
+                    tara_key = f"tara_{safe_nom}"
+                    if tara_key not in st.session_state:
+                        st.session_state[tara_key] = v_tara_init
                     v_tara_manual = st.number_input(
-                        "Tara", min_value=0.0, step=0.1, value=v_tara_cat,
-                        key=f"tara_{safe_nom}",
+                        "Tara", min_value=0.0, step=0.1,
+                        key=tara_key,
                         label_visibility="collapsed",
-                        help="Tara del contenedor en la misma unidad. Pre-cargada del catálogo, ajustable."
+                        help="Tara del contenedor. Pre-cargada del último conteo (o catálogo si es nuevo)."
                     )
                 with c6:
                     # Neto calculado usando tara editable
