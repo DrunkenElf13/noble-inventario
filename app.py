@@ -664,24 +664,39 @@ def construir_fila_historial(
     tara: float,
     observaciones: str,
 ) -> list:
+    def _s(v):
+        """Convierte strings: None/NaN → cadena vacía."""
+        if v is None:
+            return ""
+        try:
+            if pd.isna(v):
+                return ""
+        except Exception:
+            pass
+        return str(v).strip()
+
+    def _n(v):
+        """Convierte numéricos: None/NaN → 0.0"""
+        return limpiar_valor(v)
+
     return [
-        unidad,
-        nombre,
-        marca,
-        proveedor,
-        grupo,
-        fecha_entrada,
-        presentacion,
-        unidad_medida,
-        alm,
-        barra,
-        stock_neto,
-        stock_minimo,
+        _s(unidad),
+        _s(nombre),
+        _s(marca),
+        _s(proveedor),
+        _s(grupo),
+        _s(fecha_entrada),
+        _s(presentacion),
+        _s(unidad_medida),
+        _n(alm),
+        _n(barra),
+        _n(stock_neto),
+        _n(stock_minimo),
         "TRUE" if comprar else "FALSE",
-        responsable,
-        fecha_inventario,
-        max(0.0, limpiar_valor(tara)),
-        observaciones,
+        _s(responsable),
+        _s(fecha_inventario),
+        max(0.0, _n(tara)),
+        _s(observaciones),
     ]
 
 
