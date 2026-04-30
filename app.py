@@ -8,6 +8,8 @@ import calendar
 import unicodedata
 import re
 import io
+import threading
+import time as _time
 
 try:
     from reportlab.lib.pagesizes import landscape
@@ -18,6 +20,38 @@ except ImportError:
     REPORTLAB_OK = False
 
 st.set_page_config(layout="wide")
+
+# ── KEEPALIVE SERVER-SIDE — funciona aunque el navegador esté cerrado ────────
+def _keepalive_thread(intervalo_seg: int = 120):
+    """
+    Hilo daemon que se ejecuta en background dentro del proceso de Streamlit.
+    Escribe un timestamp en session_state periódicamente para que el proceso
+    Python permanezca activo, independientemente del navegador.
+
+    Al ser daemon=True, el hilo muere automáticamente si el proceso principal
+    termina — no deja procesos huérfanos.
+    """
+    while True:
+        _time.sleep(intervalo_seg)
+        _ = _time.time()
+
+def iniciar_keepalive(intervalo_seg: int = 120):
+    """
+    Lanza el hilo keepalive una sola vez por proceso.
+    La bandera _keepalive_iniciado evita duplicados en reruns de Streamlit.
+    """
+    if not st.session_state.get("_keepalive_iniciado", False):
+        hilo = threading.Thread(
+            target=_keepalive_thread,
+            args=(intervalo_seg,),
+            daemon=True,
+            name="streamlit-keepalive"
+        )
+        hilo.start()
+        st.session_state["_keepalive_iniciado"] = True
+
+iniciar_keepalive(intervalo_seg=120)
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ============================================================
 # CONSTANTES — única fuente de verdad para todo el sistema
@@ -43,32 +77,28 @@ COLS_INSUMOS = [
     "Espacio_8",              # P — columna reservada
     "Tara",                   # Q — peso de tara del contenedor (columna real en Sheet)
 ]
-# CAMBIO 1 (TARA): Se agrega "Tara" a COLS_HISTORIAL para persistirla en el Sheet.
-# Posición P (índice 15) — columna nueva. Observaciones pasa a Q.
-# Compatibilidad: normalizar_dataframe() rellena con None si la columna
-# no existe aún en el Sheet (registros históricos sin Tara → tratados como 0).
 COLS_HISTORIAL = [
     "Unidad de Negocio",      # A
     "Nombre del Insumo",      # B
-    "Marca",                  # C  — nombre real en el Sheet
-    "Proveedor",              # D  — nombre real en el Sheet
-    "Grupo",                  # E  — nombre real en el Sheet
-    "Fecha de Entrada",       # F  — nombre real en el Sheet
-    "Presentación de Compra", # G  — nombre real en el Sheet
-    "Unidad de Medida",       # H  — nombre real en el Sheet
+    "Marca",                  # C
+    "Proveedor",              # D
+    "Grupo",                  # E
+    "Fecha de Entrada",       # F
+    "Presentación de Compra", # G
+    "Unidad de Medida",       # H
     "Alm",                    # I
     "Barra",                  # J
     "Stock Neto",             # K
     "Stock Mínimo",           # L
-    "¿Comprar?",              # M  — nombre real en el Sheet
+    "¿Comprar?",              # M
     "Responsable",            # N
     "Fecha de Inventario",    # O
-    "Tara",                   # P  — NUEVO: tara guardada para trazabilidad
-    "Observaciones",          # Q  — se desplaza una columna
+    "Tara",                   # P
+    "Observaciones",          # Q
 ]
 COLS_ACCESOS    = ["Clave", "Nombre", "Rol"]
+COLS_AVISOS     = ["ID", "Título", "Mensaje", "Tipo", "Activo", "Fecha", "Autor"]
 
-# Columnas críticas: si faltan, el sistema no puede funcionar correctamente
 COLS_CRITICAS_INSUMOS   = {"Nombre del Insumo", "Grupo", "Stock Mínimo"}
 COLS_CRITICAS_HISTORIAL = {"Nombre del Insumo", "Alm", "Barra", "Fecha de Inventario"}
 
@@ -106,7 +136,6 @@ def fmt_fecha_hmo(dt) -> str:
         pass
     try:
         if hasattr(dt, 'tzinfo') and dt.tzinfo is None:
-            # Asumir que Sheets guarda en UTC si no tiene zona
             dt = dt.replace(tzinfo=timezone.utc)
         dt_hmo = dt.astimezone(TZ_HERMOSILLO)
         return dt_hmo.strftime("%d/%m/%Y %H:%M")
@@ -118,17 +147,6 @@ def fmt_fecha_hmo(dt) -> str:
 # ============================================================
 
 def limpiar_valor(valor) -> float:
-    """
-    Convierte cualquier valor de celda a float de forma segura.
-    Retorna 0.0 solo si el valor realmente es vacío/nulo/inválido.
-
-    Mejoras v3 (integración Gemini):
-    - Maneja booleanos nativos (True → 1.0, False → 0.0)
-    - Elimina espacios internos dentro del número ("1 500" → 1500.0)
-    - Tolera guiones como cero ("-" → 0.0)
-    - Maneja notación científica ("1.5e3" → 1500.0)
-    - Maneja NaN de pandas y float('nan')
-    """
     if valor is None:
         return 0.0
     if isinstance(valor, bool):
@@ -142,7 +160,6 @@ def limpiar_valor(valor) -> float:
         s = str(valor).strip()
         if not s or s in ("-", "—", "–", "N/A", "n/a", "NA", "na", "None", "null"):
             return 0.0
-        # Eliminar símbolos de moneda/porcentaje y espacios internos
         s = s.replace('%', '').replace('$', '').replace(',', '').replace(' ', '')
         return float(s)
     except (ValueError, TypeError):
@@ -150,33 +167,15 @@ def limpiar_valor(valor) -> float:
 
 
 def normalizar_nombre(nombre) -> str:
-    """
-    Normaliza un nombre de insumo para comparaciones robustas.
-    Elimina acentos, espacios extra y convierte a minúsculas.
-    "Café Molido " == "cafe molido" == "CAFÉ MOLIDO"
-    """
     s = str(nombre).strip().lower()
-    # Quitar acentos/diacríticos
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s if not unicodedata.combining(c))
-    # Colapsar espacios múltiples
     s = re.sub(r'\s+', ' ', s)
     return s
 
 
 def normalizar_dataframe(df: pd.DataFrame, columnas_esperadas: list,
                          cols_criticas: set = None) -> pd.DataFrame:
-    """
-    Mapea columnas por NOMBRE (no por posición).
-    - Si el encabezado del Sheet coincide con la constante: mapeo directo.
-    - Columnas que faltan: se crean como None con advertencia si son críticas.
-    - Columnas extra en el Sheet: se ignoran (no corrompen datos).
-
-    Esta función es inmune a reorganizaciones de columnas en el Sheet.
-    CAMBIO 2 (TARA): cuando el Sheet histórico no tiene columna "Tara"
-    (registros anteriores a v4), normalizar_dataframe la crea como None,
-    y limpiar_valor() la interpreta como 0.0. Sin ruptura de datos históricos.
-    """
     if df.empty:
         return pd.DataFrame(columns=columnas_esperadas)
 
@@ -185,7 +184,6 @@ def normalizar_dataframe(df: pd.DataFrame, columnas_esperadas: list,
     cols_faltantes   = [c for c in columnas_esperadas if c not in cols_en_sheet]
     cols_presentes   = [c for c in columnas_esperadas if c in cols_en_sheet]
 
-    # Advertir si faltan columnas críticas
     if cols_criticas:
         faltantes_criticas = set(cols_faltantes) & cols_criticas
         if faltantes_criticas:
@@ -194,19 +192,13 @@ def normalizar_dataframe(df: pd.DataFrame, columnas_esperadas: list,
                 "Verifica que los encabezados del Sheet coincidan exactamente con la configuración."
             )
 
-    # Completar columnas faltantes con None
     for col in cols_faltantes:
         df[col] = None
 
-    # Devolver solo las columnas esperadas en el orden esperado
     return df[columnas_esperadas]
 
 
 def safe_worksheet(sh, nombre: str):
-    """
-    Obtiene un worksheet con validación explícita.
-    Retorna (worksheet, None) o (None, mensaje_de_error).
-    """
     if sh is None:
         return None, "Sin conexión activa a Google Sheets."
     try:
@@ -218,10 +210,6 @@ def safe_worksheet(sh, nombre: str):
 
 
 def append_rows_con_retry(worksheet, filas: list, max_intentos: int = 3) -> tuple:
-    """
-    Escribe filas con reintentos y backoff exponencial ante errores de quota.
-    Retorna (éxito: bool, mensaje: str).
-    """
     if not filas:
         return False, "No hay filas para escribir."
     for intento in range(1, max_intentos + 1):
@@ -241,11 +229,6 @@ def append_rows_con_retry(worksheet, filas: list, max_intentos: int = 3) -> tupl
 
 
 def bloquear_doble_envio(key: str):
-    """
-    Marca una operación como 'en curso' en session_state.
-    Devuelve True si ya hay una operación activa (bloquear).
-    Uso: if bloquear_doble_envio('inv'): st.stop()
-    """
     flag = f"_enviando_{key}"
     if st.session_state.get(flag, False):
         st.warning("⏳ Operación en curso, espera un momento...")
@@ -255,7 +238,6 @@ def bloquear_doble_envio(key: str):
 
 
 def liberar_doble_envio(key: str):
-    """Libera el flag de bloqueo de doble envío."""
     st.session_state.pop(f"_enviando_{key}", None)
 
 
@@ -263,12 +245,6 @@ def liberar_doble_envio(key: str):
 # GENERADOR DE PDF 58mm
 # ============================================================
 def generar_pdf_58mm(titulo: str, lineas: list) -> bytes:
-    """
-    Genera un PDF con ancho de 58mm (rollo térmico).
-    lineas: lista de strings o tuplas (texto, estilo) donde estilo puede ser
-            'normal', 'bold', 'small', 'divider'
-    Retorna bytes del PDF.
-    """
     if not REPORTLAB_OK:
         raise RuntimeError("reportlab no está instalado. Agrégalo a requirements.txt.")
 
@@ -279,7 +255,6 @@ def generar_pdf_58mm(titulo: str, lineas: list) -> bytes:
     FUENTE_BOLD = 8
     FUENTE_SMALL = 6.5
 
-    # Calcular altura necesaria
     alto_mm = 20 + len(lineas) * LINEA_H_MM + 10
     alto_mm = max(alto_mm, 40)
 
@@ -313,7 +288,6 @@ def generar_pdf_58mm(titulo: str, lineas: list) -> bytes:
         else:
             c.setFont("Courier", FUENTE_NORMAL)
 
-        # Truncar texto para que no desborde el ancho
         max_chars = int((ANCHO_MM - MARGEN_MM * 2) / (FUENTE_NORMAL * 0.6))
         texto_trunc = str(texto)[:max_chars]
         c.drawString(margen_pts, y, texto_trunc)
@@ -349,29 +323,16 @@ sh = conectar_google_sheets()
 
 
 # ============================================================
-# MIGRACIÓN DE ESQUEMA — ejecuta una sola vez por sesión
-# Agrega el encabezado "Tara" a la columna P de Historial y Cierres
-# si aún no existe. Registros anteriores quedan con celda vacía → 0.0.
-# Sin este paso, append_rows escribe 17 columnas pero Sheets solo
-# tiene 16 encabezados, haciendo la columna Tara invisible.
+# MIGRACIÓN DE ESQUEMA
 # ============================================================
 def _migrar_encabezado_tara():
-    """
-    Verifica que la fila de encabezados de Historial, Cierres e Insumos
-    incluya "Tara" en la posición correcta.
-      - Historial / Cierres → columna P (índice 15)
-      - Insumos             → columna Q (índice 16)
-    Si no existe, escribe el encabezado sin tocar los datos existentes.
-    Se ejecuta una vez por sesión (controlado por session_state).
-    """
     if sh is None:
         return
     if st.session_state.get("_tara_migrada", False):
         return
 
-    # ── Historial y Cierres: Tara en columna P (índice 15) ──
-    IDX_TARA_HIS = COLS_HISTORIAL.index("Tara")        # = 15 → "P"
-    col_his = chr(ord("A") + IDX_TARA_HIS)             # = "P"
+    IDX_TARA_HIS = COLS_HISTORIAL.index("Tara")
+    col_his = chr(ord("A") + IDX_TARA_HIS)
 
     for hoja in ("Historial", "Cierres"):
         ws, err = safe_worksheet(sh, hoja)
@@ -384,9 +345,8 @@ def _migrar_encabezado_tara():
         except Exception:
             pass
 
-    # ── Insumos: Tara en columna Q (índice 16) ──
-    IDX_TARA_INS = COLS_INSUMOS.index("Tara")          # = 16 → "Q"
-    col_ins = chr(ord("A") + IDX_TARA_INS)             # = "Q"
+    IDX_TARA_INS = COLS_INSUMOS.index("Tara")
+    col_ins = chr(ord("A") + IDX_TARA_INS)
 
     ws_ins, err_ins = safe_worksheet(sh, "Insumos")
     if ws_ins is not None:
@@ -405,17 +365,9 @@ _migrar_encabezado_tara()
 
 # ============================================================
 # CARGA DE DATOS
-# CORRECCIÓN E: cargar_datos_integrales() se llama desde cada
-# página, no se asigna a nivel de módulo. El caché de 30s
-# absorbe las llamadas repetidas sin costo de API extra.
 # ============================================================
 @st.cache_data(ttl=30)
 def cargar_datos_integrales():
-    """
-    Carga Insumos + Historial + Cierres desde Google Sheets.
-    TTL=30s: tras cache_data.clear() + rerun(), los datos
-    se recargan correctamente en todos los usuarios activos.
-    """
     if sh is None:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -445,10 +397,8 @@ def cargar_datos_integrales():
         df_his = _to_df(val_his)
         df_cie = _to_df(val_cie) if val_cie else pd.DataFrame()
 
-        # Preservar número de fila ANTES de normalizar (normalizar reordena columnas)
         df_ins["Sheet_Row_Num"] = df_ins.index + 2
 
-        # CORRECCIÓN A: normalizar por nombre, no por posición
         df_ins = normalizar_dataframe(df_ins, COLS_INSUMOS + ["Sheet_Row_Num"],
                                       cols_criticas=COLS_CRITICAS_INSUMOS)
         df_his = normalizar_dataframe(df_his, COLS_HISTORIAL,
@@ -464,22 +414,11 @@ def cargar_datos_integrales():
             df_total["Fecha de Inventario"] = pd.to_datetime(
                 df_total["Fecha de Inventario"], errors="coerce"
             )
-            # "Fecha de Entrada" se usa como fecha de respaldo solo si es parseable
             df_total["Fecha de Entrada"] = pd.to_datetime(
                 df_total["Fecha de Entrada"], errors="coerce"
             )
 
-            # ── MERGE MAESTRO: datos estáticos SIEMPRE de Insumos ────────────
-            # Insumos  → fuente de verdad para: Nombre, Marca, Proveedor,
-            #            Grupo, Presentación de Compra, Unidad de Medida,
-            #            Stock Mínimo, Tara.
-            # Historial → fuente de verdad para: Alm, Barra, Stock Neto,
-            #             ¿Comprar?, Responsable, Fecha de Inventario,
-            #             Tara (valor capturado en ese conteo), Observaciones.
-            # El join se hace por nombre normalizado + Unidad de Negocio
-            # para ser inmune a diferencias de acentos o espacios.
             if not df_ins.empty:
-                # Preparar tabla maestra con clave normalizada
                 df_ins_m = df_ins.copy()
                 df_ins_m["_nom_norm"] = df_ins_m["Nombre del Insumo"].apply(normalizar_nombre)
                 df_ins_m["_clave"] = (
@@ -501,19 +440,11 @@ def cargar_datos_integrales():
                 df_ins_m["Tara"] = df_ins_m["Tara"].apply(limpiar_valor) if "Tara" in df_ins_m.columns else 0.0
                 df_ins_m = df_ins_m.drop_duplicates(subset=["_clave"], keep="last")
 
-                # Preparar clave en historial
                 df_total["_nom_norm"] = df_total["Nombre del Insumo"].apply(normalizar_nombre)
                 df_total["_clave"] = (
                     df_total["Unidad de Negocio"].fillna("") + "||" + df_total["_nom_norm"]
                 )
 
-                # CAMBIO 3 (TARA): "Tara" del historial se preserva como valor
-                # registrado en ese conteo específico. El merge trae "Tara" del
-                # catálogo como "Tara_cat" (sufijo _y del merge), y la del
-                # historial como "Tara" (sufijo _x). Después del merge se resuelve:
-                # si el historial tiene tara válida (> 0) se usa esa; si no, se
-                # usa la del catálogo. Esto garantiza trazabilidad de conteos
-                # históricos sin perder el valor real capturado.
                 COLS_CIFRAS = [
                     "_clave",
                     "Unidad de Negocio",
@@ -524,14 +455,12 @@ def cargar_datos_integrales():
                     "Responsable",
                     "Fecha de Inventario",
                     "Fecha de Entrada",
-                    "Tara",          # CAMBIO 3: incluir Tara del historial en cifras
+                    "Tara",
                     "Observaciones",
                 ]
                 cols_cifras_ok = [c for c in COLS_CIFRAS if c in df_total.columns]
                 df_cifras = df_total[cols_cifras_ok].copy()
 
-                # Merge: historial (cifras) LEFT JOIN insumos (estáticos)
-                # suffixes: _x = historial, _y = catálogo
                 df_total = df_cifras.merge(
                     df_ins_m,
                     on="_clave",
@@ -539,20 +468,16 @@ def cargar_datos_integrales():
                     suffixes=("_hist", "_cat"),
                 )
 
-                # CAMBIO 3 (cont.): resolver columna Tara final
-                # Prioridad: valor del historial si es > 0; si no, usar catálogo.
                 tara_hist = df_total.get("Tara_hist", pd.Series(0.0, index=df_total.index))
                 tara_cat  = df_total.get("Tara_cat",  df_total.get("Tara", pd.Series(0.0, index=df_total.index)))
                 tara_hist_clean = tara_hist.apply(limpiar_valor)
                 tara_cat_clean  = tara_cat.apply(limpiar_valor)
                 df_total["Tara"] = tara_hist_clean.where(tara_hist_clean > 0, tara_cat_clean)
 
-                # Limpiar columnas de sufijo que ya no se necesitan
                 df_total.drop(
                     columns=["Tara_hist", "Tara_cat", "_clave", "_nom_norm"],
                     inplace=True, errors="ignore"
                 )
-            # ─────────────────────────────────────────────────────────────────
 
         return df_ins, df_total
 
@@ -563,10 +488,6 @@ def cargar_datos_integrales():
 
 @st.cache_data(ttl=60)
 def obtener_usuarios():
-    """
-    TTL=60s. Crea hoja 'Accesos' con datos iniciales si no existe.
-    Retorna (dict_pin→usuario, lista_nombres, df_completo).
-    """
     if sh is None:
         return {}, [], pd.DataFrame()
 
@@ -611,16 +532,57 @@ USUARIOS_PIN, LISTA_RESPONSABLES, DF_USUARIOS = obtener_usuarios()
 
 
 # ============================================================
+# SISTEMA DE AVISOS
+# ============================================================
+@st.cache_data(ttl=30)
+def cargar_avisos():
+    """Carga avisos activos desde la hoja 'Avisos'."""
+    if sh is None:
+        return pd.DataFrame()
+    ws, err = safe_worksheet(sh, "Avisos")
+    if err:
+        return pd.DataFrame()
+    try:
+        data = ws.get_all_values()
+        if len(data) < 2:
+            return pd.DataFrame(columns=COLS_AVISOS)
+        df = pd.DataFrame(data[1:], columns=data[0])
+        for col in COLS_AVISOS:
+            if col not in df.columns:
+                df[col] = ""
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def mostrar_avisos():
+    """
+    Muestra avisos activos en la página donde se llame.
+    """
+    df_av = cargar_avisos()
+    if df_av.empty:
+        return
+
+    activos = df_av[df_av["Activo"].astype(str).str.upper() == "TRUE"]
+    if activos.empty:
+        return
+
+    ICONOS = {"info": "ℹ️", "warning": "⚠️", "urgent": "🚨"}
+    FNS    = {"info": st.info, "warning": st.warning, "urgent": st.error}
+
+    for _, av in activos.iterrows():
+        tipo   = str(av.get("Tipo", "info")).lower()
+        titulo = str(av.get("Título", ""))
+        msg    = str(av.get("Mensaje", ""))
+        icono  = ICONOS.get(tipo, "ℹ️")
+        fn     = FNS.get(tipo, st.info)
+        fn(f"{icono} **{titulo}**  \n{msg}")
+
+
+# ============================================================
 # LÓGICA DE NEGOCIO
 # ============================================================
 def obtener_ultimo_inventario(df_hist: pd.DataFrame, unidad: str = None) -> pd.DataFrame:
-    """
-    Retorna el último registro por insumo (y unidad si se especifica).
-    Stock Neto Calculado = Alm + Barra (conteo físico, no teórico).
-
-    CORRECCIÓN B: la deduplicación usa nombre normalizado para evitar
-    insumos fantasma por diferencias de espacios o acentos.
-    """
     if df_hist.empty:
         return pd.DataFrame()
 
@@ -631,10 +593,7 @@ def obtener_ultimo_inventario(df_hist: pd.DataFrame, unidad: str = None) -> pd.D
     if df_u.empty:
         return pd.DataFrame()
 
-    # Fecha efectiva: prioridad a "Fecha de Inventario", fallback a "Fecha de Entrada"
     df_u["_fecha_efectiva"] = df_u["Fecha de Inventario"].combine_first(df_u["Fecha de Entrada"])
-
-    # CORRECCIÓN B: clave de deduplicación con nombre normalizado
     df_u["_nombre_norm"] = df_u["Nombre del Insumo"].apply(normalizar_nombre)
 
     df_actual = (
@@ -647,8 +606,6 @@ def obtener_ultimo_inventario(df_hist: pd.DataFrame, unidad: str = None) -> pd.D
     for col in ["Alm", "Barra", "Stock Neto", "Stock Mínimo"]:
         df_actual[col] = df_actual[col].apply(limpiar_valor)
 
-    # CAMBIO 4 (TARA): limpiar Tara del inventario actual de la misma forma
-    # que el resto de columnas numéricas. Valores None/vacíos → 0.0.
     if "Tara" in df_actual.columns:
         df_actual["Tara"] = df_actual["Tara"].apply(limpiar_valor)
     else:
@@ -672,7 +629,6 @@ def obtener_ultimo_inventario(df_hist: pd.DataFrame, unidad: str = None) -> pd.D
 
 
 def fecha_max_segura(serie: pd.Series) -> str:
-    """Retorna el máximo de timestamps como string en hora Hermosillo. NaT-safe."""
     validas = serie.dropna()
     if validas.empty:
         return "Sin registros"
@@ -680,29 +636,15 @@ def fecha_max_segura(serie: pd.Series) -> str:
 
 
 def buscar_insumo_en_actual(df_actual: pd.DataFrame, nombre: str) -> pd.Series:
-    """
-    Busca un insumo en el inventario actual usando nombre normalizado.
-    Retorna la fila como Series, o None si no existe.
-    """
     if df_actual.empty:
         return None
     nom_norm = normalizar_nombre(nombre)
-    # Comparar con nombres normalizados del inventario actual
     mascaras = df_actual["Nombre del Insumo"].apply(normalizar_nombre) == nom_norm
     if not mascaras.any():
         return None
     return df_actual[mascaras].iloc[0]
 
 
-# ============================================================
-# FUNCIÓN AUXILIAR: construir fila para Historial
-# CAMBIO 5 (TARA): centraliza la construcción de filas del historial.
-# Todas las secciones que escriben al Sheet usan esta función,
-# garantizando que Tara siempre quede en la posición correcta
-# (columna P) y que el orden de columnas sea consistente con
-# COLS_HISTORIAL. Evita duplicación de lógica y errores de
-# indexación al agregar/mover columnas en el futuro.
-# ============================================================
 def construir_fila_historial(
     unidad: str,
     nombre: str,
@@ -722,11 +664,6 @@ def construir_fila_historial(
     tara: float,
     observaciones: str,
 ) -> list:
-    """
-    Construye una fila lista para append_rows_con_retry().
-    El orden sigue exactamente COLS_HISTORIAL (incluyendo Tara en posición P).
-    Cualquier cambio futuro a COLS_HISTORIAL debe reflejarse aquí.
-    """
     return [
         unidad,
         nombre,
@@ -743,13 +680,13 @@ def construir_fila_historial(
         "TRUE" if comprar else "FALSE",
         responsable,
         fecha_inventario,
-        max(0.0, limpiar_valor(tara)),   # Tara nunca negativa
+        max(0.0, limpiar_valor(tara)),
         observaciones,
     ]
 
 
 # ============================================================
-# ESTADO DE SESIÓN — inicialización única y segura
+# ESTADO DE SESIÓN
 # ============================================================
 _defaults = {
     "auth_status": False,
@@ -853,7 +790,6 @@ Todo lo que se vende como producto terminado o se usa como equipo de apoyo. Cont
 Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, termómetros de barra, cucharas medidoras.
         """)
 
-    # — TABLA DE GRUPOS —
     with st.expander("📊 Tabla Resumen de Grupos"):
         grupos_info = [
             {"Grupo": "A", "Nombre": "Café, Leches y Lácteos",        "Rutina": "Diaria",      "Riesgo": "Alto",  "Almacén": "Refrigerador / Bodega seca", "Nota": "Contar antes de abrir"},
@@ -931,9 +867,85 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
             else:
                 st.info("No hay responsables registrados.")
 
+        st.divider()
+        with st.expander("📢 Gestión de Avisos"):
+            df_av_mgr = cargar_avisos()
+
+            # — Crear aviso nuevo —
+            st.write("**Nuevo aviso**")
+            with st.form("f_aviso", clear_on_submit=True):
+                av_titulo = st.text_input("Título")
+                av_msg    = st.text_area("Mensaje", height=80)
+                av_tipo   = st.selectbox("Tipo", ["info", "warning", "urgent"],
+                                         format_func=lambda x: {
+                                             "info":    "ℹ️ Informativo",
+                                             "warning": "⚠️ Advertencia",
+                                             "urgent":  "🚨 Urgente"
+                                         }[x])
+                if st.form_submit_button("📢 Publicar aviso", use_container_width=True):
+                    if not av_titulo.strip() or not av_msg.strip():
+                        st.error("Título y mensaje son obligatorios.")
+                    else:
+                        ws_av, err = safe_worksheet(sh, "Avisos")
+                        if err:
+                            try:
+                                ws_av = sh.add_worksheet(title="Avisos", rows="200", cols="7")
+                                ws_av.append_row(COLS_AVISOS)
+                            except Exception as e:
+                                st.error(f"No se pudo crear hoja Avisos: {e}")
+                                ws_av = None
+                        if ws_av:
+                            import uuid
+                            nueva = [
+                                str(uuid.uuid4())[:8],
+                                av_titulo.strip(),
+                                av_msg.strip(),
+                                av_tipo,
+                                "TRUE",
+                                ts_hermosillo(),
+                                st.session_state.current_user,
+                            ]
+                            ws_av.append_row(nueva, value_input_option="USER_ENTERED")
+                            st.cache_data.clear()
+                            st.success("Aviso publicado.")
+                            time.sleep(0.5)
+                            st.rerun()
+
+            # — Administrar avisos existentes —
+            if not df_av_mgr.empty:
+                st.divider()
+                st.write("**Avisos existentes**")
+                for _, av in df_av_mgr.iterrows():
+                    activo = str(av.get("Activo", "")).upper() == "TRUE"
+                    tipo   = str(av.get("Tipo", "info"))
+                    icono  = {"info": "ℹ️", "warning": "⚠️", "urgent": "🚨"}.get(tipo, "ℹ️")
+                    estado = "🟢" if activo else "⚫"
+                    col_a, col_b = st.columns([3, 1])
+                    with col_a:
+                        st.write(f"{estado} {icono} **{av.get('Título','')}**")
+                        st.caption(str(av.get("Mensaje", ""))[:80])
+                    with col_b:
+                        av_id = str(av.get("ID", ""))
+                        label = "Desactivar" if activo else "Activar"
+                        if st.button(label, key=f"tog_{av_id}", use_container_width=True):
+                            ws_av, err = safe_worksheet(sh, "Avisos")
+                            if not err:
+                                try:
+                                    celdas = ws_av.get_all_values()
+                                    for i, fila in enumerate(celdas[1:], start=2):
+                                        if fila[0] == av_id:
+                                            nuevo_val = "FALSE" if activo else "TRUE"
+                                            ws_av.update(
+                                                range_name=f"E{i}", values=[[nuevo_val]]
+                                            )
+                                            st.cache_data.clear()
+                                            st.rerun()
+                                            break
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
+
     # --- CATÁLOGO ---
     if st.session_state.auth_status:
-        # CORRECCIÓN E: cargar datos frescos en cada sección que los necesite
         df_raw_sb, _ = cargar_datos_integrales()
 
         st.divider()
@@ -1051,18 +1063,13 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
 
 # ============================================================
 # PÁGINAS PRINCIPALES
-# CORRECCIÓN E aplicada en cada página:
-#   df_raw, df_historial = cargar_datos_integrales()
-# El caché de 30s absorbe llamadas repetidas.
-# Después de cache_data.clear() + rerun(), los datos
-# se recargan correctamente en lugar de usar la copia de módulo.
 # ============================================================
 pagina = st.session_state.pagina
 
 
 # ------ DASHBOARD ------
 if pagina == "Dashboard":
-    df_raw, df_historial = cargar_datos_integrales()  # CORRECCIÓN E
+    df_raw, df_historial = cargar_datos_integrales()
     st.title("📊 Dashboard Operativo")
 
     ahora = ahora_hermosillo()
@@ -1076,9 +1083,6 @@ if pagina == "Dashboard":
     df_actual = obtener_ultimo_inventario(df_historial)
 
     if not df_actual.empty:
-        # "Necesita Compra" viene del campo marcado manualmente por el barista (🛒).
-        # obtener_ultimo_inventario ya lo parsea como bool desde el Sheet.
-        # NO recalcular desde stock vs mínimo — eso pisa la decisión del operador.
         crit = df_actual[df_actual["Necesita Compra"] == True]
 
         c1, c2, c3 = st.columns(3)
@@ -1090,33 +1094,100 @@ if pagina == "Dashboard":
                   fecha_max_segura(df_actual["Fecha de Inventario"]))
 
         st.divider()
+
+        # ── Tabla de pendientes por unidad ───────────────────────────────
+        def tabla_pendientes(df_pen: pd.DataFrame, titulo: str):
+            if df_pen.empty:
+                st.success(f"✅ {titulo} — Operación cubierta.")
+                return
+
+            st.markdown(f"#### {titulo} — {len(df_pen)} pendiente(s)")
+
+            df_pen = df_pen.copy()
+            df_pen["_brecha"] = df_pen["Stock Neto Calculado"] - df_pen["Stock Mínimo"]
+            df_pen = df_pen.sort_values(["Grupo", "_brecha"], ascending=[True, True])
+
+            h = st.columns([0.5, 2.5, 1.0, 1.0, 1.0, 1.8])
+            for col, label in zip(h, ["Grp", "Insumo", "Stock", "Mín", "Brecha", "Último conteo"]):
+                col.markdown(f"<small><b>{label}</b></small>", unsafe_allow_html=True)
+
+            grupo_anterior = None
+            for _, r in df_pen.iterrows():
+                grupo = str(r.get("Grupo", "—"))
+                stock = r["Stock Neto Calculado"]
+                minimo = r["Stock Mínimo"]
+                brecha = stock - minimo
+                fecha_str = fmt_fecha_hmo(r.get("Fecha de Inventario"))
+
+                if grupo != grupo_anterior:
+                    st.markdown(
+                        f"<div style='margin:6px 0 2px;font-size:11px;"
+                        f"color:var(--color-text-tertiary);letter-spacing:.08em'>"
+                        f"GRUPO {grupo}</div>",
+                        unsafe_allow_html=True
+                    )
+                    grupo_anterior = grupo
+
+                if brecha < 0:
+                    color_dot = "#E24B4A"
+                    color_txt = "#E24B4A"
+                elif brecha < minimo * 0.3:
+                    color_dot = "#EF9F27"
+                    color_txt = "#BA7517"
+                else:
+                    color_dot = "#639922"
+                    color_txt = "#3B6D11"
+
+                pct = min(100, int((stock / minimo * 100) if minimo > 0 else 100))
+                barra_html = (
+                    f"<div style='background:var(--color-border-tertiary);"
+                    f"border-radius:4px;height:6px;width:100%;margin-top:4px'>"
+                    f"<div style='width:{pct}%;height:6px;border-radius:4px;"
+                    f"background:{color_dot}'></div></div>"
+                )
+
+                c = st.columns([0.5, 2.5, 1.0, 1.0, 1.0, 1.8])
+                c[0].markdown(
+                    f"<span style='font-size:16px;line-height:2;color:{color_dot}'>●</span>",
+                    unsafe_allow_html=True
+                )
+                c[1].markdown(
+                    f"<span style='font-size:13px;font-weight:500'>"
+                    f"{r['Nombre del Insumo']}</span>",
+                    unsafe_allow_html=True
+                )
+                c[2].markdown(
+                    f"<span style='color:{color_txt};font-weight:500'>{stock:.1f}</span>",
+                    unsafe_allow_html=True
+                )
+                c[3].markdown(
+                    f"<span style='font-size:13px'>{minimo:.1f}</span>",
+                    unsafe_allow_html=True
+                )
+                c[4].markdown(
+                    f"<span style='color:{color_txt};font-weight:500'>"
+                    f"{brecha:+.1f}</span>{barra_html}",
+                    unsafe_allow_html=True
+                )
+                c[5].markdown(
+                    f"<span style='font-size:11px;color:var(--color-text-secondary)'>"
+                    f"{fecha_str}</span>",
+                    unsafe_allow_html=True
+                )
+
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("🏢 Faltantes: Noble")
-            ins_n = crit[crit["Unidad de Negocio"] == "Noble"]
-            if not ins_n.empty:
-                for _, r in ins_n.iterrows():
-                    fecha_str = fmt_fecha_hmo(r.get("Fecha de Inventario"))
-                    st.error(
-                        f"**{r['Nombre del Insumo']}** "
-                        f"(Stock: {r['Stock Neto Calculado']} / Mín: {r['Stock Mínimo']})"
-                        + (f"  \n🕒 Último conteo: {fecha_str}" if fecha_str else "")
-                    )
-            else:
-                st.success("Operación cubierta.")
+            st.subheader("🏢 Noble")
+            tabla_pendientes(
+                crit[crit["Unidad de Negocio"] == "Noble"],
+                "Noble"
+            )
         with col2:
-            st.subheader("☕ Faltantes: Coffee Station")
-            ins_cs = crit[crit["Unidad de Negocio"] == "Coffee Station"]
-            if not ins_cs.empty:
-                for _, r in ins_cs.iterrows():
-                    fecha_str = fmt_fecha_hmo(r.get("Fecha de Inventario"))
-                    st.error(
-                        f"**{r['Nombre del Insumo']}** "
-                        f"(Stock: {r['Stock Neto Calculado']} / Mín: {r['Stock Mínimo']})"
-                        + (f"  \n🕒 Último conteo: {fecha_str}" if fecha_str else "")
-                    )
-            else:
-                st.success("Operación cubierta.")
+            st.subheader("☕ Coffee Station")
+            tabla_pendientes(
+                crit[crit["Unidad de Negocio"] == "Coffee Station"],
+                "Coffee Station"
+            )
 
         st.divider()
         st.subheader("🕒 Actividad Reciente")
@@ -1141,8 +1212,9 @@ if pagina == "Dashboard":
 
 # ------ CAPTURAR INVENTARIO ------
 elif pagina == "Inventario":
-    df_raw, df_historial = cargar_datos_integrales()  # CORRECCIÓN E
+    df_raw, df_historial = cargar_datos_integrales()
     st.title("📝 Capturar inventario")
+    mostrar_avisos()
 
     if not st.session_state.auth_status:
         st.error("🔒 Autenticación requerida.")
@@ -1195,11 +1267,7 @@ elif pagina == "Inventario":
     if df_f.empty:
         st.info("Selecciona al menos un grupo para mostrar insumos.")
     else:
-        # ── CORRECCIÓN BUFFERING: envolver todo en st.form para evitar reruns
-        # en cada keystroke. Los valores solo se procesan al presionar submit.
-        # Esto elimina el "buffering" por rerun en cada input numérico.
         with st.form("form_inventario", clear_on_submit=False):
-            # Encabezados — 8 columnas con tara visible
             h1, h2, h3, h4, h5, h6, h7, h8 = st.columns([2.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.2, 2.5])
             for col, label in zip(
                 [h1, h2, h3, h4, h5, h6, h7, h8],
@@ -1213,18 +1281,13 @@ elif pagina == "Inventario":
             regs_form = {}
             for idx_row, row in df_f.iterrows():
                 nom      = str(row.get("Nombre del Insumo", ""))
-                # FIX DuplicateElementKey: incluir idx_row en el key para garantizar unicidad
                 safe_nom = re.sub(r'[^a-zA-Z0-9]', '_', nom)[:35] + f"_{idx_row}"
 
-                # CORRECCIÓN B: buscar con nombre normalizado
                 prev = buscar_insumo_en_actual(df_actual, nom)
                 v_prev      = prev["Stock Neto Calculado"] if prev is not None else 0.0
-                # FIX UI: pre-cargar Alm y Barra con valores previos del historial
                 v_alm_prev  = limpiar_valor(prev["Alm"])   if prev is not None else 0.0
                 v_bar_prev  = limpiar_valor(prev["Barra"]) if prev is not None else 0.0
                 v_min       = limpiar_valor(row.get("Stock Mínimo", 0))
-                # Tara: prioridad al último conteo del historial (igual que Alm/Barra).
-                # Fallback al catálogo de Insumos si el historial no tiene valor.
                 v_tara_hist = limpiar_valor(prev.get("Tara", 0)) if prev is not None else 0.0
                 v_tara_cat  = limpiar_valor(row.get("Tara", 0))
                 v_tara_init = v_tara_hist if v_tara_hist > 0 else v_tara_cat
@@ -1265,8 +1328,6 @@ elif pagina == "Inventario":
                         key=f"u_{safe_nom}", label_visibility="collapsed"
                     )
                 with c5:
-                    # Tara editable por conteo.
-                    # Se pre-carga desde el último historial; si no hay, desde el catálogo.
                     tara_key = f"tara_{safe_nom}"
                     if tara_key not in st.session_state:
                         st.session_state[tara_key] = v_tara_init
@@ -1277,13 +1338,10 @@ elif pagina == "Inventario":
                         help="Tara del contenedor. Pre-cargada del último conteo (o catálogo si es nuevo)."
                     )
                 with c6:
-                    # Tara aplica SOLO a Barra (el contenedor está en barra, no en almacén)
                     v_b_neto    = max(0.0, v_b - v_tara_manual)
                     v_n_display = v_a + v_b_neto
                     st.write(f"**{v_n_display:.1f}**")
                 with c7:
-                    # ¿Comprar?: precargar desde historial solo si el widget no existe
-                    # aún en session_state (evita pisarle el valor al usuario en reruns).
                     if prev is not None:
                         v_comprar_prev = bool(prev.get("Necesita Compra", False))
                     else:
@@ -1300,8 +1358,6 @@ elif pagina == "Inventario":
                         placeholder="Opcional",
                     )
 
-                # Guardar todos los valores capturados — incluyendo Tara y Observaciones
-                # "b" guarda el NETO de Barra (ya descontada la tara) para columna J
                 regs_form[nom] = {
                     "a": v_a, "b": v_b_neto, "n": v_n_display,
                     "u": v_u, "p": v_p, "c": v_c,
@@ -1310,8 +1366,6 @@ elif pagina == "Inventario":
                 }
                 st.divider()
 
-            # CORRECCIÓN botón único: se elimina el botón desactivado superior.
-            # Un solo form_submit_button por formulario evita el error de Streamlit.
             btn_inv = st.form_submit_button(
                 "📥 PROCESAR INVENTARIO",
                 use_container_width=True,
@@ -1319,7 +1373,6 @@ elif pagina == "Inventario":
                 key="btn_procesar_inventario_unique"
             )
 
-        # Procesar fuera del form para evitar doble submit
         if btn_inv:
             ws_his, err = safe_worksheet(sh, "Historial")
             if err:
@@ -1329,8 +1382,6 @@ elif pagina == "Inventario":
                 filas = []
                 for n, info in regs_form.items():
                     dm = info["row"]
-                    # CAMBIO 6 (cont.): usar construir_fila_historial() para
-                    # garantizar que Tara quede en la columna P del Sheet.
                     filas.append(construir_fila_historial(
                         unidad          = u_sel,
                         nombre          = n,
@@ -1347,7 +1398,7 @@ elif pagina == "Inventario":
                         comprar         = info["p"],
                         responsable     = r_sel,
                         fecha_inventario= fh,
-                        tara            = info["tara"],   # NUEVO
+                        tara            = info["tara"],
                         observaciones   = info["c"],
                     ))
                 ok, msg = append_rows_con_retry(ws_his, filas)
@@ -1362,8 +1413,9 @@ elif pagina == "Inventario":
 
 # ------ ENTRADA DE COMPRAS ------
 elif pagina == "Ingresos":
-    df_raw, df_historial = cargar_datos_integrales()  # CORRECCIÓN E
+    df_raw, df_historial = cargar_datos_integrales()
     st.title("📥 Entrada de compras")
+    mostrar_avisos()
 
     if not st.session_state.auth_status:
         st.error("🔒 Autenticación requerida.")
@@ -1404,7 +1456,6 @@ elif pagina == "Ingresos":
         bulk_data = []
         for _, r in df_u.iterrows():
             nom = r["Nombre del Insumo"]
-            # CORRECCIÓN B: buscar con nombre normalizado
             prev = buscar_insumo_en_actual(df_actual, nom)
             v_a_prev = prev["Alm"]   if prev is not None else 0.0
             v_b_prev = prev["Barra"] if prev is not None else 0.0
@@ -1420,7 +1471,6 @@ elif pagina == "Ingresos":
             disabled=["Insumo", "Stock Alm", "Stock Barra"]
         )
 
-        # CORRECCIÓN C: bloqueo de doble envío
         proc_bulk = st.session_state.get("_procesando_bulk", False)
         btn_bulk  = st.button(
             "📦 EJECUTAR INGRESO BULK", type="primary", disabled=proc_bulk
@@ -1448,8 +1498,6 @@ elif pagina == "Ingresos":
                         continue
                     row_ins = row_matches.iloc[0]
                     v_min   = limpiar_valor(row_ins.get("Stock Mínimo", 0))
-                    # CAMBIO 7 (TARA): bulk no captura tara individual;
-                    # se usa la del catálogo como referencia para el registro.
                     tara_bulk = limpiar_valor(row_ins.get("Tara", 0))
                     nuevo_a   = orig["Stock Alm"] + ingreso
                     nuevo_n   = nuevo_a + orig["Stock Barra"]
@@ -1469,7 +1517,7 @@ elif pagina == "Ingresos":
                         comprar         = nuevo_n < v_min,
                         responsable     = r_sel,
                         fecha_inventario= "",
-                        tara            = tara_bulk,   # NUEVO
+                        tara            = tara_bulk,
                         observaciones   = "",
                     ))
 
@@ -1504,7 +1552,6 @@ elif pagina == "Ingresos":
                 if row_matches.empty:
                     continue
                 row_ins = row_matches.iloc[0]
-                # CORRECCIÓN B: buscar con nombre normalizado
                 prev     = buscar_insumo_en_actual(df_actual, nom)
                 v_a_prev = prev["Alm"]   if prev is not None else 0.0
                 v_b_prev = prev["Barra"] if prev is not None else 0.0
@@ -1541,15 +1588,13 @@ elif pagina == "Ingresos":
                     nuevo_neto = nuevo_alm + v_b_prev
                     st.success(f"**{nuevo_neto:.1f}**")
 
-                # CAMBIO 8 (TARA): guardar tara_ingreso en regs_ingreso para persistirla
                 regs_ingreso[nom] = {
                     "nuevo_a": nuevo_alm, "b": v_b_prev,
                     "nuevo_n": nuevo_neto, "row": row_ins, "min": v_min,
-                    "tara": tara_ingreso,   # NUEVO
+                    "tara": tara_ingreso,
                 }
                 st.divider()
 
-            # CORRECCIÓN C: bloqueo de doble envío
             proc_ing = st.session_state.get("_procesando_ingreso", False)
             btn_ing  = st.button(
                 "📦 EJECUTAR INGRESO", use_container_width=True,
@@ -1567,8 +1612,6 @@ elif pagina == "Ingresos":
                     filas = []
                     for n, info in regs_ingreso.items():
                         dm = info["row"]
-                        # CAMBIO 8 (cont.): usar construir_fila_historial()
-                        # para incluir Tara en columna P.
                         filas.append(construir_fila_historial(
                             unidad          = u_sel,
                             nombre          = n,
@@ -1585,7 +1628,7 @@ elif pagina == "Ingresos":
                             comprar         = info["nuevo_n"] < info["min"],
                             responsable     = r_sel,
                             fecha_inventario= "",
-                            tara            = info["tara"],   # NUEVO
+                            tara            = info["tara"],
                             observaciones   = "",
                         ))
                     ok, msg = append_rows_con_retry(ws_his, filas)
@@ -1601,7 +1644,7 @@ elif pagina == "Ingresos":
 
 # ------ INVENTARIO ACTUAL ------
 elif pagina == "Consulta":
-    df_raw, df_historial = cargar_datos_integrales()  # CORRECCIÓN E
+    df_raw, df_historial = cargar_datos_integrales()
     st.title("📦 Inventario actual")
     u_sel     = st.selectbox("🏢 Unidad:", UNIDADES)
     df_actual = obtener_ultimo_inventario(df_historial, u_sel)
@@ -1645,7 +1688,7 @@ elif pagina == "Consulta":
         "Alm":                 "Almacén",
         "Barra":               "Barra",
         "Stock Neto Calculado":"Stock Total",
-        "Tara":                "Tara",        # CAMBIO 9 (TARA): mostrar Tara en vista
+        "Tara":                "Tara",
         "Unidad de Medida":     "Medida",
         "Stock Mínimo":        "Mínimo",
         "Necesita Compra":     "¿Comprar?",
@@ -1678,7 +1721,7 @@ elif pagina == "Consulta":
 
 # ------ LISTA DE CONTEO (PDF 58mm) ------
 elif pagina == "Impresion":
-    df_raw, _ = cargar_datos_integrales()  # CORRECCIÓN E
+    df_raw, _ = cargar_datos_integrales()
     st.title("🖨️ Ticket de Conteo (58mm)")
     u_sel = st.selectbox("Sucursal:", UNIDADES)
     df_u  = (
@@ -1694,7 +1737,6 @@ elif pagina == "Impresion":
     if g_sel and not df_u.empty:
         df_p  = df_u[df_u["Grupo"].isin(g_sel)].sort_values(["Grupo", "Nombre del Insumo"])
 
-        # Construir líneas para PDF
         lineas_pdf = []
         lineas_pdf.append((f"* CONTEO {u_sel.upper()} *", "title"))
         lineas_pdf.append((f"Fecha: {ahora_hermosillo().strftime('%d/%m/%Y')}", "small"))
@@ -1711,7 +1753,6 @@ elif pagina == "Impresion":
             lineas_pdf.append(("[    ] Alm   [    ] Bar", "small"))
             lineas_pdf.append(("", "divider"))
 
-        # Previsualización de texto
         with st.expander("👁️ Vista previa del contenido", expanded=True):
             prev_txt = f"{'='*28}\n* CONTEO {u_sel.upper()} *\nFecha: {ahora_hermosillo().strftime('%d/%m/%Y')}\n{'-'*28}\n"
             gr_actual_p = ""
@@ -1725,7 +1766,6 @@ elif pagina == "Impresion":
                 prev_txt += "-" * 28 + "\n"
             st.code(prev_txt, language=None)
 
-        # Generar PDF y botón de descarga
         pdf_bytes = generar_pdf_58mm(f"Conteo {u_sel}", lineas_pdf)
         nombre_archivo = f"conteo_{u_sel.replace(' ','_')}_{ahora_hermosillo().strftime('%Y%m%d_%H%M')}.pdf"
         st.download_button(
@@ -1742,7 +1782,7 @@ elif pagina == "Impresion":
 
 # ------ LISTA DE COMPRA (PDF 58mm) ------
 elif pagina == "ListaCompra":
-    _, df_historial = cargar_datos_integrales()  # CORRECCIÓN E
+    _, df_historial = cargar_datos_integrales()
     st.title("🛒 Ticket de Compra (58mm)")
     u_sel     = st.radio("Generar orden para:", UNIDADES, horizontal=True)
     df_actual = obtener_ultimo_inventario(df_historial, u_sel)
@@ -1753,7 +1793,6 @@ elif pagina == "ListaCompra":
 
     com = df_actual[df_actual["Necesita Compra"] == True]
     if not com.empty:
-        # Construir líneas para PDF
         lineas_pdf = []
         lineas_pdf.append((f"* COMPRAS {u_sel.upper()} *", "title"))
         lineas_pdf.append((f"Fecha: {ahora_hermosillo().strftime('%d/%m/%Y')}", "small"))
@@ -1765,7 +1804,6 @@ elif pagina == "ListaCompra":
             lineas_pdf.append((f"  Stock:{r['Stock Neto Calculado']} Min:{r['Stock Mínimo']}", "small"))
             lineas_pdf.append(("", "divider"))
 
-        # Previsualización
         with st.expander("👁️ Vista previa del contenido", expanded=True):
             prev_txt = f"{'='*28}\n* COMPRAS {u_sel.upper()} *\nFecha: {ahora_hermosillo().strftime('%d/%m/%Y')}\n{'-'*28}\n"
             for _, r in com.iterrows():
@@ -1774,7 +1812,6 @@ elif pagina == "ListaCompra":
                 prev_txt += "-" * 28 + "\n"
             st.code(prev_txt, language=None)
 
-        # PDF y descarga
         pdf_bytes = generar_pdf_58mm(f"Compras {u_sel}", lineas_pdf)
         nombre_archivo = f"compras_{u_sel.replace(' ','_')}_{ahora_hermosillo().strftime('%Y%m%d_%H%M')}.pdf"
         st.download_button(
@@ -1791,7 +1828,7 @@ elif pagina == "ListaCompra":
 
 # ------ REPORTE DE STOCK (PDF 58mm) ------
 elif pagina == "ReporteStock":
-    _, df_historial = cargar_datos_integrales()  # CORRECCIÓN E
+    _, df_historial = cargar_datos_integrales()
     st.title("📦 Reporte de Stock (58mm)")
     u_sel     = st.radio("Generar reporte para:", UNIDADES, horizontal=True)
     df_actual = obtener_ultimo_inventario(df_historial, u_sel)
@@ -1803,7 +1840,6 @@ elif pagina == "ReporteStock":
     col_grupo = "Grupo" if "Grupo" in df_actual.columns else "Grupo"
     df_rep    = df_actual.sort_values([col_grupo, "Nombre del Insumo"])
 
-    # Construir líneas para PDF
     lineas_pdf = []
     lineas_pdf.append((f"* INVENTARIO {u_sel.upper()} *", "title"))
     lineas_pdf.append((ahora_hermosillo().strftime('%d/%m/%Y %H:%M'), "small"))
@@ -1821,7 +1857,6 @@ elif pagina == "ReporteStock":
 
     lineas_pdf.append(("", "divider"))
 
-    # Previsualización
     with st.expander("👁️ Vista previa del contenido", expanded=True):
         prev_txt = f"{'='*28}\n* INVENTARIO {u_sel.upper()} *\n{ahora_hermosillo().strftime('%d/%m/%Y %H:%M')}\n{'-'*28}\n"
         gr_actual_p = ""
@@ -1835,7 +1870,6 @@ elif pagina == "ReporteStock":
         prev_txt += "-" * 28 + "\n"
         st.code(prev_txt, language=None)
 
-    # PDF y descarga
     pdf_bytes = generar_pdf_58mm(f"Stock {u_sel}", lineas_pdf)
     nombre_archivo = f"stock_{u_sel.replace(' ','_')}_{ahora_hermosillo().strftime('%Y%m%d_%H%M')}.pdf"
     st.download_button(
@@ -1850,7 +1884,7 @@ elif pagina == "ReporteStock":
 
 # ------ CORTE DE MES ------
 elif pagina == "CorteMes":
-    _, df_historial = cargar_datos_integrales()  # CORRECCIÓN E
+    _, df_historial = cargar_datos_integrales()
 
     if st.session_state.user_role != "admin":
         st.error("🚫 Acceso denegado. Solo administradores.")
@@ -1868,7 +1902,6 @@ elif pagina == "CorteMes":
     if confirmar and st.button("🚀 Ejecutar Cierre", type="primary"):
         with st.status("Ejecutando protocolo de cierre...", expanded=True) as status:
             try:
-                # PASO 1 — Calcular estados finales
                 st.write("1/4 — Calculando estados finales de stock...")
                 df_corte = obtener_ultimo_inventario(df_historial)
                 if df_corte.empty:
@@ -1882,8 +1915,6 @@ elif pagina == "CorteMes":
 
                 filas_corte = []
                 for _, r in df_corte.iterrows():
-                    # CAMBIO 10 (TARA): incluir Tara en el consolidado de cierre
-                    # para que el saldo inicial del siguiente mes preserve la tara.
                     filas_corte.append(construir_fila_historial(
                         unidad          = r.get("Unidad de Negocio", ""),
                         nombre          = r.get("Nombre del Insumo", ""),
@@ -1900,11 +1931,10 @@ elif pagina == "CorteMes":
                         comprar         = bool(r.get("Necesita Compra", False)),
                         responsable     = "SISTEMA-CIERRE",
                         fecha_inventario= fh,
-                        tara            = r.get("Tara", 0),   # NUEVO
+                        tara            = r.get("Tara", 0),
                         observaciones   = "Corte consolidado",
                     ))
 
-                # PASO 2 — Archivar historial ANTES de limpiar (protege datos)
                 st.write("2/4 — Archivando historial previo...")
                 ws_his, err = safe_worksheet(sh, "Historial")
                 if err:
@@ -1912,7 +1942,6 @@ elif pagina == "CorteMes":
 
                 datos_hist = ws_his.get_all_values()
 
-                # CORRECCIÓN D: detectar si el historial ya fue limpiado en intento previo
                 if len(datos_hist) <= 1:
                     st.warning(
                         "El Historial ya está vacío. Posiblemente el cierre anterior "
@@ -1922,18 +1951,15 @@ elif pagina == "CorteMes":
                     status.update(label="⚠️ Historial ya estaba vacío", state="error")
                     st.stop()
 
-                # Obtener o crear Archivo_Historial
                 ws_arc, _ = safe_worksheet(sh, "Archivo_Historial")
                 if ws_arc is None:
                     ws_arc = sh.add_worksheet(title="Archivo_Historial", rows="10000", cols="20")
                     ws_arc.append_row(encabezados)
 
-                # CORRECCIÓN D: marcar timestamp de archivo para detectar duplicados
                 timestamp_marca = [f"=== CORTE {fh} ==="] + [""] * (len(encabezados) - 1)
                 ws_arc.append_row(timestamp_marca)
-                ws_arc.append_rows(datos_hist[1:])  # Sin encabezado (ya existe en el archivo)
+                ws_arc.append_rows(datos_hist[1:])
 
-                # PASO 3 — Escribir Cierres con el consolidado
                 st.write("3/4 — Consolidando saldos iniciales...")
                 ws_cie, _ = safe_worksheet(sh, "Cierres")
                 if ws_cie is None:
@@ -1942,9 +1968,6 @@ elif pagina == "CorteMes":
                 ws_cie.append_row(encabezados)
                 ws_cie.append_rows(filas_corte)
 
-                # PASO 4 — Limpiar Historial (SIEMPRE el último paso)
-                # Si falla aquí, Cierres ya tiene los datos consolidados
-                # y Archivo_Historial tiene el backup. No hay pérdida.
                 st.write("4/4 — Reiniciando Historial...")
                 ws_his.clear()
                 ws_his.append_row(encabezados)
