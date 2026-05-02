@@ -49,13 +49,11 @@ COLS_INSUMOS = [
     "Espacio_2", "Espacio_3", "Espacio_4", "Stock Mínimo",
     "Espacio_5", "Espacio_6", "Espacio_7", "Espacio_8", "Tara",
 ]
-# MODIFICACIÓN: Se agrega Costo_Entrada como columna R (índice 17) en el historial
 COLS_HISTORIAL = [
     "Unidad de Negocio", "Nombre del Insumo", "Marca", "Proveedor", "Grupo",
     "Fecha de Entrada", "Presentación de Compra", "Unidad de Medida",
     "Alm", "Barra", "Stock Neto", "Stock Mínimo", "¿Comprar?",
     "Responsable", "Fecha de Inventario", "Tara", "Observaciones",
-    "Costo_Entrada",
 ]
 COLS_ACCESOS = ["Clave", "Nombre", "Rol"]
 COLS_AVISOS  = ["ID", "Título", "Mensaje", "Tipo", "Activo", "Fecha", "Autor"]
@@ -271,28 +269,6 @@ def _migrar_encabezado_tara():
 _migrar_encabezado_tara()
 
 # ============================================================
-# MIGRACIÓN: columna Costo_Entrada en Historial (columna R)
-# ============================================================
-def _migrar_encabezado_costo_entrada():
-    if sh is None or st.session_state.get("_costo_entrada_migrado", False):
-        return
-    IDX_COSTO = COLS_HISTORIAL.index("Costo_Entrada")
-    col_letra = chr(ord("A") + IDX_COSTO)
-    for hoja in ("Historial", "Cierres"):
-        ws, err = safe_worksheet(sh, hoja)
-        if ws is None:
-            continue
-        try:
-            encabezados_actuales = ws.row_values(1)
-            if "Costo_Entrada" not in encabezados_actuales:
-                ws.update(range_name=f"{col_letra}1", values=[["Costo_Entrada"]])
-        except Exception:
-            pass
-    st.session_state["_costo_entrada_migrado"] = True
-
-_migrar_encabezado_costo_entrada()
-
-# ============================================================
 # CARGA DE DATOS — INVENTARIO
 # ============================================================
 @st.cache_data(ttl=30)
@@ -353,8 +329,7 @@ def cargar_datos_integrales():
                 df_total["_clave"]   = df_total["Unidad de Negocio"].fillna("") + "||" + df_total["_nom_norm"]
 
                 COLS_CIFRAS = ["_clave","Unidad de Negocio","Alm","Barra","Stock Neto","¿Comprar?",
-                               "Responsable","Fecha de Inventario","Fecha de Entrada","Tara","Observaciones",
-                               "Costo_Entrada"]
+                               "Responsable","Fecha de Inventario","Fecha de Entrada","Tara","Observaciones"]
                 cols_cifras_ok = [c for c in COLS_CIFRAS if c in df_total.columns]
                 df_cifras = df_total[cols_cifras_ok].copy()
                 df_total  = df_cifras.merge(df_ins_m, on="_clave", how="left", suffixes=("_hist","_cat"))
@@ -523,12 +498,10 @@ def buscar_insumo_en_actual(df_actual: pd.DataFrame, nombre: str) -> pd.Series:
         return None
     return df_actual[mascaras].iloc[0]
 
-# MODIFICACIÓN: Se agrega parámetro costo_entrada a construir_fila_historial
 def construir_fila_historial(
     unidad, nombre, marca, proveedor, grupo, fecha_entrada,
     presentacion, unidad_medida, alm, barra, stock_neto,
     stock_minimo, comprar, responsable, fecha_inventario, tara, observaciones,
-    costo_entrada=0.0,
 ) -> list:
     def _s(v):
         if v is None: return ""
@@ -544,31 +517,7 @@ def construir_fila_historial(
         "TRUE" if comprar else "FALSE",
         _s(responsable), _s(fecha_inventario),
         max(0.0, _n(tara)), _s(observaciones),
-        _n(costo_entrada),
     ]
-
-# ============================================================
-# HELPER: obtener último costo por insumo desde historial
-# ============================================================
-def obtener_ultimo_costo(df_hist: pd.DataFrame) -> dict:
-    """
-    Retorna un dict {nombre_normalizado: ultimo_costo_entrada}
-    Solo considera filas donde Costo_Entrada > 0.
-    """
-    if df_hist.empty or "Costo_Entrada" not in df_hist.columns:
-        return {}
-    df_c = df_hist.copy()
-    df_c["_costo_v"] = df_c["Costo_Entrada"].apply(limpiar_valor)
-    df_c = df_c[df_c["_costo_v"] > 0].copy()
-    if df_c.empty:
-        return {}
-    df_c["_fecha_ef"] = df_c["Fecha de Inventario"].combine_first(df_c["Fecha de Entrada"])
-    df_c["_nom_norm"] = df_c["Nombre del Insumo"].apply(normalizar_nombre)
-    df_c = (
-        df_c.sort_values("_fecha_ef", ascending=True, na_position="first")
-            .drop_duplicates(subset=["_nom_norm"], keep="last")
-    )
-    return dict(zip(df_c["_nom_norm"], df_c["_costo_v"]))
 
 # ============================================================
 # LÓGICA DE NEGOCIO — VENTAS
@@ -652,7 +601,6 @@ with st.sidebar:
             st.rerun()
 
     st.divider()
-    # MODIFICACIÓN: Nombre de app cambiado a "Operaciones Noble"
     st.title("⚙️ Operaciones Noble")
     if st.button("📊 Dashboard Principal", use_container_width=True):
         cambiar_pagina("Dashboard")
@@ -938,8 +886,7 @@ pagina = st.session_state.pagina
 # ── DASHBOARD ────────────────────────────────────────────────
 if pagina == "Dashboard":
     df_raw, df_historial = cargar_datos_integrales()
-    # MODIFICACIÓN: Nombre de la app en el título del dashboard
-    st.title("📊 Operaciones Noble — Dashboard")
+    st.title("📊 Dashboard Operativo")
 
     ahora = ahora_hermosillo()
     dias_faltantes = calendar.monthrange(ahora.year, ahora.month)[1] - ahora.day
@@ -950,22 +897,10 @@ if pagina == "Dashboard":
 
     if not df_actual.empty:
         crit = df_actual[df_actual["Necesita Compra"] == True]
-
-        # MODIFICACIÓN: Calcular Valor Total del Inventario usando último costo registrado
-        ultimo_costo_dict = obtener_ultimo_costo(df_historial)
-        valor_total_inventario = 0.0
-        for _, row_val in df_actual.iterrows():
-            nom_norm = normalizar_nombre(str(row_val.get("Nombre del Insumo", "")))
-            costo_u  = ultimo_costo_dict.get(nom_norm, 0.0)
-            stock_n  = limpiar_valor(row_val.get("Stock Neto Calculado", 0))
-            valor_total_inventario += stock_n * costo_u
-
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3 = st.columns(3)
         c1.metric("🛒 Pendientes Noble",          len(crit[crit["Unidad de Negocio"] == "Noble"]))
         c2.metric("🛒 Pendientes Coffee Station",  len(crit[crit["Unidad de Negocio"] == "Coffee Station"]))
         c3.metric("🕒 Último Movimiento",          fecha_max_segura(df_actual["Fecha de Inventario"]))
-        # MODIFICACIÓN: Nueva métrica de Valor Total del Inventario
-        c4.metric("💰 Valor Total del Inventario", f"${valor_total_inventario:,.2f}")
 
         st.divider()
 
@@ -1066,14 +1001,12 @@ elif pagina == "Inventario":
     if df_f.empty:
         st.info("Selecciona al menos un grupo para mostrar insumos.")
     else:
-        # MODIFICACIÓN: Headers actualizados para reflejar nueva lógica de captura
         with st.form("form_inventario", clear_on_submit=False):
             h1,h2,h3,h4,h5,h6,h7,h8 = st.columns([2.8,1.0,1.0,1.0,1.0,1.0,1.2,2.5])
             for col, label in zip([h1,h2,h3,h4,h5,h6,h7,h8],
-                                  ["Insumo / Ref","Alm (piezas cerradas)","Barra (bruto)","Medida","Tara (gr)","Neto*","¿Pedir?","Observaciones"]):
+                                  ["Insumo / Ref","Almacén","Barra (bruto)","Medida","Tara (gr)","Neto*","¿Pedir?","Observaciones"]):
                 col.write(f"**{label}**")
-            # MODIFICACIÓN: Nota de pie actualizada para reflejar nueva lógica de cálculo
-            st.markdown("*Neto = (Piezas Cerradas × Factor Presentación) + (Peso Bruto Barra − Tara). La Tara se descuenta solo de Barra.")
+            st.markdown("*Neto = Alm + (Barra − Tara). La Tara se descuenta solo de Barra.")
             st.divider()
 
             regs_form = {}
@@ -1089,15 +1022,6 @@ elif pagina == "Inventario":
                 v_tara_cat  = limpiar_valor(row.get("Tara",0))
                 v_tara_init = v_tara_hist if v_tara_hist > 0 else v_tara_cat
 
-                # MODIFICACIÓN: Leer factor de conversión desde columna G (Presentación de Compra)
-                # Se interpreta como número de unidades por presentación cerrada
-                factor_presentacion = limpiar_valor(row.get("Presentación de Compra", 1))
-                if factor_presentacion <= 0:
-                    factor_presentacion = 1.0
-
-                # MODIFICACIÓN: Leer unidad de medida desde columna H como texto estático
-                unidad_medida_catalogo = str(row.get("Unidad de Medida", "pz")).strip()
-
                 c1,c2,c3,c4,c5,c6,c7,c8 = st.columns([2.8,1.0,1.0,1.0,1.0,1.0,1.2,2.5])
                 with c1:
                     st.write(f"**{nom}**")
@@ -1105,34 +1029,31 @@ elif pagina == "Inventario":
                     diff  = v_prev - v_min
                     color = "green" if diff >= 0 else "red"
                     tara_txt = f" | Tara: {v_tara_init}" if v_tara_init > 0 else ""
-                    # MODIFICACIÓN: Se muestra factor de presentación en el subtítulo
                     st.markdown(
-                        f"<small>Anterior: {v_prev} | Mín: {v_min} (<span style='color:{color}'>{diff:+.1f}</span>){tara_txt} | Factor pres.: {factor_presentacion}</small>",
+                        f"<small>Anterior: {v_prev} | Mín: {v_min} (<span style='color:{color}'>{diff:+.1f}</span>){tara_txt}</small>",
                         unsafe_allow_html=True
                     )
                 with c2:
                     alm_key = f"a_{safe_nom}"
                     if alm_key not in st.session_state: st.session_state[alm_key] = v_alm_prev
-                    # MODIFICACIÓN: El campo Almacén ahora captura "Piezas Cerradas"
-                    v_a_piezas = st.number_input("Piezas cerradas Alm", min_value=0.0, step=1.0, key=alm_key, label_visibility="collapsed")
+                    v_a = st.number_input("Alm", min_value=0.0, step=1.0, key=alm_key, label_visibility="collapsed")
                 with c3:
                     bar_key = f"b_{safe_nom}"
                     if bar_key not in st.session_state: st.session_state[bar_key] = v_bar_prev
-                    v_b = st.number_input("Bar bruto", min_value=0.0, step=1.0, key=bar_key, label_visibility="collapsed")
+                    v_b = st.number_input("Bar", min_value=0.0, step=1.0, key=bar_key, label_visibility="collapsed")
                 with c4:
-                    # MODIFICACIÓN: Unidad de medida leída de columna H como texto estático (no editable)
-                    st.write(f"**{unidad_medida_catalogo}**")
-                    v_u = unidad_medida_catalogo
+                    u_act = str(row.get("Unidad de Medida","pz")).lower()
+                    v_u = st.selectbox("U", UNIDADES_MED,
+                                       index=UNIDADES_MED.index(u_act) if u_act in UNIDADES_MED else 0,
+                                       key=f"u_{safe_nom}", label_visibility="collapsed")
                 with c5:
                     tara_key = f"tara_{safe_nom}"
                     if tara_key not in st.session_state: st.session_state[tara_key] = v_tara_init
                     v_tara_manual = st.number_input("Tara", min_value=0.0, step=0.1,
                                                     key=tara_key, label_visibility="collapsed")
                 with c6:
-                    # MODIFICACIÓN: Cálculo final = (Piezas Cerradas × Factor Presentación) + (Barra bruto − Tara)
-                    v_alm_neto  = v_a_piezas * factor_presentacion
                     v_b_neto    = max(0.0, v_b - v_tara_manual)
-                    v_n_display = v_alm_neto + v_b_neto
+                    v_n_display = v_a + v_b_neto
                     st.write(f"**{v_n_display:.1f}**")
                 with c7:
                     v_comprar_prev = bool(prev.get("Necesita Compra",False)) if prev is not None else False
@@ -1142,9 +1063,7 @@ elif pagina == "Inventario":
                 with c8:
                     v_c = st.text_input("Obs", key=f"c_{safe_nom}", label_visibility="collapsed", placeholder="Opcional")
 
-                # MODIFICACIÓN: Se guarda v_alm_neto (ya convertido) como valor de Almacén,
-                # y v_b_neto como Barra (ya descontada tara)
-                regs_form[nom] = {"a":v_alm_neto,"b":v_b_neto,"n":v_n_display,"u":v_u,"p":v_p,"c":v_c,"tara":v_tara_manual,"row":row}
+                regs_form[nom] = {"a":v_a,"b":v_b_neto,"n":v_n_display,"u":v_u,"p":v_p,"c":v_c,"tara":v_tara_manual,"row":row}
                 st.divider()
 
             btn_inv = st.form_submit_button("📥 PROCESAR INVENTARIO", use_container_width=True, type="primary")
@@ -1166,7 +1085,6 @@ elif pagina == "Inventario":
                         stock_neto=info["n"], stock_minimo=dm.get("Stock Mínimo",0),
                         comprar=info["p"], responsable=r_sel, fecha_inventario=fh,
                         tara=info["tara"], observaciones=info["c"],
-                        costo_entrada=0.0,
                     ))
                 ok, msg = append_rows_con_retry(ws_his, filas)
                 if ok:
@@ -1205,19 +1123,16 @@ elif pagina == "Ingresos":
 
     if modo_bulk:
         st.subheader("Carga Bulk")
-        # MODIFICACIÓN: Bulk mode — se agrega campo de costo de compra por partida
         bulk_data = []
         for _, r in df_u.iterrows():
             nom = r["Nombre del Insumo"]
             prev = buscar_insumo_en_actual(df_actual, nom)
             bulk_data.append({"Insumo":nom, "Stock Alm":prev["Alm"] if prev is not None else 0.0,
-                               "Stock Barra":prev["Barra"] if prev is not None else 0.0,
-                               "+ Ingreso":0.0, "Costo Total ($)":0.0})
+                               "Stock Barra":prev["Barra"] if prev is not None else 0.0, "+ Ingreso":0.0})
         df_edit   = pd.DataFrame(bulk_data)
-        edited_df = st.data_editor(df_edit[["Insumo","Stock Alm","Stock Barra","+ Ingreso","Costo Total ($)"]],
+        edited_df = st.data_editor(df_edit[["Insumo","Stock Alm","Stock Barra","+ Ingreso"]],
                                    hide_index=True, use_container_width=True,
                                    disabled=["Insumo","Stock Alm","Stock Barra"])
-        st.caption("💡 'Costo Total ($)' es el costo total de esa compra específica (se guarda en columna R del Historial).")
         proc_bulk = st.session_state.get("_procesando_bulk", False)
         btn_bulk  = st.button("📦 EJECUTAR INGRESO BULK", type="primary", disabled=proc_bulk)
         if btn_bulk and not proc_bulk:
@@ -1242,8 +1157,6 @@ elif pagina == "Ingresos":
                     tara_bulk = limpiar_valor(row_ins.get("Tara",0))
                     nuevo_a   = orig["Stock Alm"] + ingreso
                     nuevo_n   = nuevo_a + orig["Stock Barra"]
-                    # MODIFICACIÓN: Capturar costo de la partida para el bulk
-                    costo_partida = limpiar_valor(r_ed.get("Costo Total ($)", 0.0))
                     filas_bulk.append(construir_fila_historial(
                         unidad=u_sel, nombre=nom, marca=row_ins.get("Marca",""),
                         proveedor=row_ins.get("Proveedor",""), grupo=row_ins.get("Grupo",""),
@@ -1252,7 +1165,6 @@ elif pagina == "Ingresos":
                         barra=orig["Stock Barra"], stock_neto=nuevo_n, stock_minimo=v_min,
                         comprar=nuevo_n < v_min, responsable=r_sel, fecha_inventario="",
                         tara=tara_bulk, observaciones="",
-                        costo_entrada=costo_partida,
                     ))
                 st.session_state["_procesando_bulk"] = False
                 if not filas_bulk:
@@ -1271,9 +1183,8 @@ elif pagina == "Ingresos":
         if insumos_llegados:
             regs_ingreso = {}
             st.divider()
-            # MODIFICACIÓN: Se añade columna de Costo Total a los encabezados del formulario de ingreso
-            h1,h2,h3,h4,h5,h6 = st.columns([3,2,1.5,1.5,2,2])
-            for col, label in zip([h1,h2,h3,h4,h5,h6],["Insumo","Stock Ant (Alm+Bar)","+ Cantidad","Tara","= Nuevo Total","Costo Total ($)"]):
+            h1,h2,h3,h4,h5 = st.columns([3,2,1.5,1.5,2])
+            for col, label in zip([h1,h2,h3,h4,h5],["Insumo","Stock Ant (Alm+Bar)","+ Cantidad","Tara","= Nuevo Total"]):
                 col.write(f"**{label}**")
             st.divider()
             for i, nom in enumerate(insumos_llegados):
@@ -1284,7 +1195,7 @@ elif pagina == "Ingresos":
                 v_a_prev = prev["Alm"]   if prev is not None else 0.0
                 v_b_prev = prev["Barra"] if prev is not None else 0.0
                 v_min    = limpiar_valor(row_ins.get("Stock Mínimo",0))
-                c1,c2,c3,c4,c5,c6 = st.columns([3,2,1.5,1.5,2,2])
+                c1,c2,c3,c4,c5 = st.columns([3,2,1.5,1.5,2])
                 with c1:
                     st.write(f"**{nom}**")
                     st.caption(f"Marca: {row_ins.get('Marca','-')} | Prov: {row_ins.get('Proveedor','-')}")
@@ -1304,15 +1215,8 @@ elif pagina == "Ingresos":
                     nuevo_alm  = v_a_prev + cant_neta
                     nuevo_neto = nuevo_alm + v_b_prev
                     st.success(f"**{nuevo_neto:.1f}**")
-                with c6:
-                    # MODIFICACIÓN: Campo de Costo Total de Compra por partida (obligatorio visualmente)
-                    costo_compra = st.number_input("Costo ($)", min_value=0.0, step=1.0, value=None,
-                                                   key=f"costo_ing_{i}", label_visibility="collapsed", placeholder="Costo total")
-                    costo_compra = costo_compra if costo_compra is not None else 0.0
-                regs_ingreso[nom] = {"nuevo_a":nuevo_alm,"b":v_b_prev,"nuevo_n":nuevo_neto,"row":row_ins,"min":v_min,"tara":tara_ingreso,"costo":costo_compra}
+                regs_ingreso[nom] = {"nuevo_a":nuevo_alm,"b":v_b_prev,"nuevo_n":nuevo_neto,"row":row_ins,"min":v_min,"tara":tara_ingreso}
                 st.divider()
-
-            st.caption("💡 'Costo Total ($)' es el importe total pagado por esa compra. Se guarda en la columna R del Historial para calcular el Valor del Inventario.")
 
             proc_ing = st.session_state.get("_procesando_ingreso", False)
             btn_ing  = st.button("📦 EJECUTAR INGRESO", use_container_width=True, type="primary", disabled=proc_ing)
@@ -1335,7 +1239,6 @@ elif pagina == "Ingresos":
                             alm=info["nuevo_a"], barra=info["b"], stock_neto=info["nuevo_n"],
                             stock_minimo=info["min"], comprar=info["nuevo_n"] < info["min"],
                             responsable=r_sel, fecha_inventario="", tara=info["tara"], observaciones="",
-                            costo_entrada=info["costo"],
                         ))
                     ok, msg = append_rows_con_retry(ws_his, filas)
                     st.session_state["_procesando_ingreso"] = False
@@ -1885,7 +1788,6 @@ elif pagina == "CorteMes":
                         stock_neto=r.get("Stock Neto Calculado",0), stock_minimo=r.get("Stock Mínimo",0),
                         comprar=bool(r.get("Necesita Compra",False)), responsable="SISTEMA-CIERRE",
                         fecha_inventario=fh, tara=r.get("Tara",0), observaciones="Corte consolidado",
-                        costo_entrada=limpiar_valor(r.get("Costo_Entrada",0)),
                     ))
                 st.write("2/4 — Archivando historial previo...")
                 ws_his, err = safe_worksheet(sh, "Historial")
