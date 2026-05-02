@@ -656,9 +656,8 @@ Ejemplos: desengrasante, cloro, gel antibacterial, franelas, esponjas, cepillos 
 Productos para venta directa o preparación de alimentos. Revisión de fecha de caducidad en cada conteo.
 Ejemplos: pan para sándwich, pan dulce, muffins, galletas empacadas, snacks, fruta para decoración.
 
-**Grupo G — Retail, Utensilios y Otros**
-Todo lo que se vende como producto terminado o se usa como equipo de apoyo. Conteo menos frecuente pero registrar cualquier salida.
-Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, termómetros de barra, cucharas medidoras.
+**Grupo G — Compras pendientes**
+Todo lo que es necesario comprar para asegurar, complementar o mejorar la operación de la cafetería.
         """)
 
     with st.expander("📊 Tabla Resumen de Grupos"):
@@ -669,7 +668,7 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
             {"Grupo":"D","Nombre":"Empaques y Desechables","Rutina":"Cada 2 días","Riesgo":"Medio","Almacén":"Bodega empaques","Nota":"Contar en piezas/rollos"},
             {"Grupo":"E","Nombre":"Suministros de Limpieza","Rutina":"Cada 2 días","Riesgo":"Bajo","Almacén":"Bodega limpieza","Nota":"Separar de alimentos"},
             {"Grupo":"F","Nombre":"Comida y Vitrina","Rutina":"Cada 2 días","Riesgo":"Alto","Almacén":"Vitrina / Refrigerador","Nota":"Verificar caducidad"},
-            {"Grupo":"G","Nombre":"Retail, Utensilios y Otros","Rutina":"Cada 2 días","Riesgo":"Bajo","Almacén":"Bodega general / Mostrador","Nota":"Registrar cada salida"},
+            {"Grupo":"G","Nombre":"Compras pendientes","Rutina":"Cada 2 días","Riesgo":"Bajo","Almacén":"Bodega general / Mostrador","Nota":"Registrar cada salida"},
         ]
         st.dataframe(pd.DataFrame(grupos_info), hide_index=True, use_container_width=True)
 
