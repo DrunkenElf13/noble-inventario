@@ -47,7 +47,7 @@ COLS_INSUMOS = [
     "Unidad de Negocio", "Nombre del Insumo", "Marca", "Proveedor", "Grupo",
     "Espacio_1", "Presentación de Compra", "Unidad de Medida",
     "Espacio_2", "Espacio_3", "Espacio_4", "Stock Mínimo",
-    "Espacio_5", "Espacio_6", "Espacio_7", "Espacio_8", "Tara",
+    "Espacio_5", "Espacio_6", "Espacio_7", "Espacio_8", "Tara", "Activo",  # ← NUEVO: "Activo" en columna R (índice 17)
 ]
 COLS_HISTORIAL = [
     "Unidad de Negocio", "Nombre del Insumo", "Marca", "Proveedor", "Grupo",
@@ -264,6 +264,32 @@ def _migrar_encabezado_tara():
                 ws_ins.update(range_name=f"{col_ins}1", values=[["Tara"]])
         except Exception:
             pass
+
+    # ← NUEVO: migrar encabezado "Activo" en columna R de la pestaña Insumos
+    IDX_ACTIVO_INS = COLS_INSUMOS.index("Activo")
+    col_activo = chr(ord("A") + IDX_ACTIVO_INS)  # = "R"
+    if ws_ins is not None:
+        try:
+            encabezados_actuales = ws_ins.row_values(1)
+            if "Activo" not in encabezados_actuales:
+                ws_ins.update(range_name=f"{col_activo}1", values=[["Activo"]])
+                # ← NUEVO: para filas existentes sin valor en columna R,
+                #           establecer TRUE por defecto (no romper insumos ya activos)
+                todos_los_valores = ws_ins.get_all_values()
+                num_filas = len(todos_los_valores)
+                if num_filas > 1:
+                    celdas_a_rellenar = []
+                    for fila_idx in range(2, num_filas + 1):
+                        fila_datos = todos_los_valores[fila_idx - 1]
+                        val_activo = fila_datos[IDX_ACTIVO_INS] if len(fila_datos) > IDX_ACTIVO_INS else ""
+                        if str(val_activo).strip() == "":
+                            celdas_a_rellenar.append([f"{col_activo}{fila_idx}", "TRUE"])
+                    for celda_ref, val in celdas_a_rellenar:
+                        ws_ins.update(range_name=celda_ref, values=[[val]])
+        except Exception:
+            pass
+    # ← FIN NUEVO
+
     st.session_state["_tara_migrada"] = True
 
 _migrar_encabezado_tara()
@@ -301,6 +327,21 @@ def cargar_datos_integrales():
         df_ins["Sheet_Row_Num"] = df_ins.index + 2
         df_ins = normalizar_dataframe(df_ins, COLS_INSUMOS + ["Sheet_Row_Num"],
                                       cols_criticas=COLS_CRITICAS_INSUMOS)
+
+        # ← NUEVO: filtrar df_ins para que las vistas de Captura e Inventario
+        #           solo vean insumos activos (columna R = "Activo" == "TRUE").
+        #           Se aplica ÚNICAMENTE sobre df_ins (catálogo).
+        #           df_his y df_cie NO se filtran: los datos históricos se preservan íntegros.
+        if "Activo" in df_ins.columns:
+            df_ins_activos = df_ins[
+                df_ins["Activo"].astype(str).str.strip().str.upper() == "TRUE"
+            ].copy()
+        else:
+            # Si la columna aún no existe en el sheet (antes de la migración),
+            # tratamos todos los insumos como activos para no romper nada.
+            df_ins_activos = df_ins.copy()
+        # ← FIN NUEVO
+
         df_his = normalizar_dataframe(df_his, COLS_HISTORIAL,
                                       cols_criticas=COLS_CRITICAS_HISTORIAL)
 
@@ -314,8 +355,19 @@ def cargar_datos_integrales():
             df_total["Fecha de Inventario"] = pd.to_datetime(df_total["Fecha de Inventario"], errors="coerce")
             df_total["Fecha de Entrada"]    = pd.to_datetime(df_total["Fecha de Entrada"], errors="coerce")
 
-            if not df_ins.empty:
+            # ← NUEVO: el merge de metadatos del catálogo usa df_ins_activos para enriquecer
+            #           el historial. Sin embargo, filas históricas de insumos desactivados
+            #           siguen presentes en df_total (solo quedan sin metadatos actualizados
+            #           del catálogo, lo cual es correcto: preservan sus propios valores históricos).
+            if not df_ins_activos.empty:
+                df_ins_m = df_ins_activos.copy()
+            # ← FIN NUEVO
+            elif not df_ins.empty:
                 df_ins_m = df_ins.copy()
+            else:
+                df_ins_m = pd.DataFrame()
+
+            if not df_ins_m.empty:
                 df_ins_m["_nom_norm"] = df_ins_m["Nombre del Insumo"].apply(normalizar_nombre)
                 df_ins_m["_clave"]   = df_ins_m["Unidad de Negocio"].fillna("") + "||" + df_ins_m["_nom_norm"]
                 COLS_ESTATICAS = ["_clave","Nombre del Insumo","Marca","Proveedor","Grupo",
@@ -342,7 +394,14 @@ def cargar_datos_integrales():
                 df_total.drop(columns=["Tara_hist","Tara_cat","_clave","_nom_norm"],
                               inplace=True, errors="ignore")
 
-        return df_ins, df_total
+        # ← NUEVO: devolver df_ins_activos como primer elemento del tuple,
+        #           en lugar del df_ins completo (que incluía insumos desactivados).
+        #           Todas las páginas que usan df_raw (Inventario, Ingresos, Impresion, Sidebar)
+        #           recibirán automáticamente solo insumos activos.
+        #           df_total (historial) permanece sin filtrar.
+        return df_ins_activos, df_total
+        # ← FIN NUEVO
+
     except Exception as e:
         st.error(f"Falla en extracción de datos: {e}")
         return pd.DataFrame(), pd.DataFrame()
@@ -792,7 +851,27 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
 
     # CATÁLOGO
     if st.session_state.auth_status:
-        df_raw_sb, _ = cargar_datos_integrales()
+        # ← NUEVO: cargar df_raw_sb usando el df_ins completo (no filtrado) para que el admin
+        #           pueda editar/activar insumos desactivados también.
+        #           Se hace una carga directa del sheet sin filtro de Activo para la gestión del catálogo.
+        df_raw_sb_full = pd.DataFrame()
+        if sh is not None:
+            try:
+                ws_ins_sb, _ = safe_worksheet(sh, "Insumos")
+                if ws_ins_sb is not None:
+                    val_ins_sb = ws_ins_sb.get_all_values()
+                    if len(val_ins_sb) > 1:
+                        df_raw_sb_full = pd.DataFrame(val_ins_sb[1:], columns=val_ins_sb[0])
+                        df_raw_sb_full["Sheet_Row_Num"] = df_raw_sb_full.index + 2
+                        df_raw_sb_full = normalizar_dataframe(
+                            df_raw_sb_full, COLS_INSUMOS + ["Sheet_Row_Num"],
+                            cols_criticas=COLS_CRITICAS_INSUMOS
+                        )
+            except Exception:
+                pass
+        df_raw_sb = df_raw_sb_full  # el sidebar de catálogo ve todos los insumos (activos e inactivos)
+        # ← FIN NUEVO
+
         st.divider()
         st.subheader("🛠️ Gestión del Catálogo")
         op_cat = st.radio("Acción:", ["Añadir Insumo","Editar Insumo"])
@@ -808,6 +887,7 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                 um = st.selectbox("Unidad de Medida", UNIDADES_MED)
                 sm = st.number_input("Stock Mínimo", min_value=0.0)
                 tara_new = st.number_input("Tara (kg/gr)", min_value=0.0, value=0.0)
+                # ← NUEVO: todo insumo creado desde el formulario nace como Activo = TRUE
                 if st.form_submit_button("✨ Crear Insumo"):
                     if not n.strip():
                         st.error("El nombre del insumo es obligatorio.")
@@ -818,7 +898,7 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                         else:
                             try:
                                 ws_ins.append_row(
-                                    [u, n.strip(), m, p, g, "", uc, um, "", "", "", sm, "", "", "", "", tara_new],
+                                    [u, n.strip(), m, p, g, "", uc, um, "", "", "", sm, "", "", "", "", tara_new, "TRUE"],  # ← NUEVO: "TRUE" en columna R
                                     value_input_option="USER_ENTERED"
                                 )
                                 st.cache_data.clear()
@@ -836,7 +916,20 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                 if not ins_nombres:
                     st.info("El catálogo está vacío.")
                 else:
-                    ins_edit = st.selectbox("Seleccionar Insumo a Editar:", sorted(ins_nombres))
+                    # ← NUEVO: mostrar indicador visual de estado (activo/inactivo) en el selector
+                    def _label_insumo(nombre):
+                        mask = df_raw_sb["Nombre del Insumo"] == nombre
+                        if not mask.any():
+                            return nombre
+                        val_activo = str(df_raw_sb[mask].iloc[0].get("Activo", "TRUE")).strip().upper()
+                        return nombre if val_activo == "TRUE" else f"⛔ {nombre} (inactivo)"
+
+                    ins_edit = st.selectbox(
+                        "Seleccionar Insumo a Editar:",
+                        sorted(ins_nombres),
+                        format_func=_label_insumo
+                    )
+                    # ← FIN NUEVO
                     mask = df_raw_sb["Nombre del Insumo"] == ins_edit
                     if not mask.any():
                         st.warning("Insumo no encontrado.")
@@ -855,6 +948,14 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                             e_um = st.selectbox("Medida", UNIDADES_MED, index=UNIDADES_MED.index(u_val) if u_val in UNIDADES_MED else 0)
                             e_sm = st.number_input("Stock Mínimo", min_value=0.0, value=limpiar_valor(d.get("Stock Mínimo",0)))
                             e_tara = st.number_input("Tara (kg/gr)", min_value=0.0, value=limpiar_valor(d.get("Tara",0)))
+                            # ← NUEVO: toggle Activo/Inactivo en el formulario de edición
+                            activo_actual = str(d.get("Activo", "TRUE")).strip().upper() == "TRUE"
+                            e_activo = st.toggle(
+                                "Insumo Activo",
+                                value=activo_actual,
+                                help="Desactiva para ocultarlo de Captura e Inventario sin borrar su historial."
+                            )
+                            # ← FIN NUEVO
                             if st.form_submit_button("💾 Actualizar Insumo"):
                                 if not e_n.strip():
                                     st.error("El nombre no puede quedar vacío.")
@@ -868,8 +969,8 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                                             if idx < 2:
                                                 raise ValueError("Número de fila inválido.")
                                             ws_ins.update(
-                                                range_name=f"A{idx}:Q{idx}",
-                                                values=[[e_u, e_n.strip(), e_m, e_p, e_g, "", e_uc, e_um, "", "", "", e_sm, "", "", "", "", e_tara]]
+                                                range_name=f"A{idx}:R{idx}",  # ← NUEVO: extendido de Q a R para incluir Activo
+                                                values=[[e_u, e_n.strip(), e_m, e_p, e_g, "", e_uc, e_um, "", "", "", e_sm, "", "", "", "", e_tara, "TRUE" if e_activo else "FALSE"]]  # ← NUEVO: columna R
                                             )
                                             st.cache_data.clear()
                                             st.success("Catálogo actualizado.")
@@ -983,6 +1084,7 @@ elif pagina == "Inventario":
     with col_r:
         r_sel = st.selectbox("👤 Responsable", responsables, index=resp_idx,
                              disabled=(st.session_state.user_role != "admin"))
+    # ← NUEVO: df_raw ya viene filtrado (solo activos), no se requiere cambio aquí
     df_u = df_raw[df_raw["Unidad de Negocio"] == u_sel] if not df_raw.empty else pd.DataFrame()
     with col_g:
         grps  = sorted(df_u["Grupo"].dropna().unique().tolist()) if not df_u.empty and "Grupo" in df_u.columns else GRUPOS
@@ -1112,6 +1214,7 @@ elif pagina == "Ingresos":
     with col_r:
         r_sel = st.selectbox("👤 Responsable:", responsables, index=resp_idx,
                              disabled=(st.session_state.user_role != "admin"))
+    # ← NUEVO: df_raw ya viene filtrado (solo activos), no se requiere cambio aquí
     df_u = df_raw[df_raw["Unidad de Negocio"] == u_sel] if not df_raw.empty else pd.DataFrame()
     if df_u.empty:
         st.warning("Sin insumos registrados para esta unidad.")
@@ -1634,6 +1737,7 @@ elif pagina == "Impresion":
     df_raw, _ = cargar_datos_integrales()
     st.title("🖨️ Ticket de Conteo (58mm)")
     u_sel = st.selectbox("Sucursal:", UNIDADES)
+    # ← NUEVO: df_raw ya viene filtrado (solo activos), no se requiere cambio aquí
     df_u  = df_raw[df_raw["Unidad de Negocio"] == u_sel] if not df_raw.empty else pd.DataFrame()
     grps  = sorted(df_u["Grupo"].dropna().unique().tolist()) if not df_u.empty and "Grupo" in df_u.columns else []
     g_sel = st.multiselect("Filtrar por Grupos:", grps)
