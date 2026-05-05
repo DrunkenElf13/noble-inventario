@@ -1491,21 +1491,37 @@ elif pagina == "Ventas":
 
     notas_v = st.text_input("📝 Notas del día (opcional):", placeholder="Ej: Día festivo, falla de sistema, etc.")
 
+    # ── CAMBIO 1 ── Toggle para registrar día operativo con venta en cero ───────
+    dia_sin_venta = st.toggle(
+        "📵 Día sin venta (cierre en cero)",
+        value=False,
+        help="Activa esta opción para registrar un día operativo donde no hubo ventas. "
+             "Permite distinguirlo de un día simplemente no capturado y mantiene tus promedios correctos."
+    )
+    if dia_sin_venta and venta_total == 0:
+        st.warning("⚠️ Se registrará este día con venta = $0. Asegúrate de que la cafetería operó pero no tuvo ingresos.")
+    # ── FIN CAMBIO 1 ─────────────────────────────────────────────────────────────
+
     st.divider()
     if st.button("💾 GUARDAR REGISTRO DE VENTA", type="primary", use_container_width=True):
-        if venta_total == 0 and total_tix == 0:
-            st.warning("⚠️ Ingresa al menos un valor de venta o tickets antes de guardar.")
+        # ── CAMBIO 1 (continuación) ── Condición modificada para permitir día sin venta ─
+        if venta_total == 0 and total_tix == 0 and not dia_sin_venta:
+            st.warning("⚠️ Ingresa al menos un valor de venta o tickets, o activa 'Día sin venta' para registrar un cierre en cero.")
+        # ── FIN CAMBIO 1 (continuación) ──────────────────────────────────────────────────
         else:
             ws_v, err = _asegurar_hoja_ventas()
             if err:
                 st.error(err)
             else:
+                # ── CAMBIO 1 (continuación) ── Inyectar nota automática si día sin venta ─
+                notas_final = notas_v if notas_v.strip() else ("DÍA SIN VENTA" if dia_sin_venta else "")
+                # ── FIN CAMBIO 1 (continuación) ──────────────────────────────────────────
                 fila = _construir_fila_venta(
                     fecha=fecha_venta, efectivo=efectivo, transferencias=transferencias,
                     tarjeta=tarjeta, uber=uber, rappi=rappi,
                     tickets_pos=tickets_pos, tickets_uber=tickets_uber, tickets_rappi=tickets_rappi,
                     meta_mensual=meta_mensual, dias_habiles=int(dias_habiles),
-                    responsable=responsable_v, notas=notas_v,
+                    responsable=responsable_v, notas=notas_final,
                 )
                 ok, msg = append_rows_con_retry(ws_v, [fila])
                 if ok:
@@ -1555,6 +1571,16 @@ elif pagina == "DashboardVentas":
     faltante   = meta_m - venta_acum
     avance_pct = (venta_acum / meta_m * 100) if meta_m > 0 else 0
 
+    # ── CAMBIO 2 ── Cálculo de días con/sin venta para métricas precisas ────────
+    dias_con_venta_cnt  = int((df_mes["Venta_Diaria"] > 0).sum())
+    dias_sin_venta_cnt  = int((df_mes["Venta_Diaria"] == 0).sum())
+    # Ticket promedio real: excluye días con tickets = 0 para no distorsionar el promedio
+    df_con_tix          = df_mes[df_mes["Total_Tickets"] > 0]
+    tix_acum_con_venta  = int(df_con_tix["Total_Tickets"].sum())
+    venta_acum_con_tix  = df_con_tix["Venta_Diaria"].sum()
+    tix_prom_real       = round(venta_acum_con_tix / tix_acum_con_venta, 2) if tix_acum_con_venta > 0 else 0
+    # ── FIN CAMBIO 2 ─────────────────────────────────────────────────────────────
+
     st.subheader(f"Resumen — {mes_sel_str}")
     k1,k2,k3,k4 = st.columns(4)
     k1.metric("Venta Acumulada", f"${venta_acum:,.2f}")
@@ -1562,6 +1588,37 @@ elif pagina == "DashboardVentas":
     k3.metric("Faltante",        f"${faltante:,.2f}", delta=f"{avance_pct:.1f}% avance",
               delta_color="normal" if faltante <= 0 else "inverse")
     k4.metric("Ticket Promedio", f"${tix_prom_g:,.2f}")
+
+    # ── CAMBIO 2 (continuación) ── Fila de métricas de tickets y cobertura diaria ─
+    st.divider()
+    st.subheader("🎫 Métricas de Tickets")
+    tk1, tk2, tk3, tk4 = st.columns(4)
+    tk1.metric(
+        "Tickets Acumulados",
+        f"{tix_total:,}",
+        help="Total de transacciones registradas en el mes (POS + Uber + Rappi)."
+    )
+    tk2.metric(
+        "Ticket Promedio Real",
+        f"${tix_prom_real:,.2f}" if tix_prom_real > 0 else "—",
+        help="Promedio calculado únicamente sobre días con al menos un ticket. "
+             "Excluye días sin venta para no distorsionar el indicador."
+    )
+    tk3.metric(
+        "Días con Venta",
+        f"{dias_con_venta_cnt}",
+        delta=f"de {len(df_mes)} registrados",
+        delta_color="off",
+        help="Días del mes donde se registró al menos un peso de venta."
+    )
+    tk4.metric(
+        "Días sin Venta",
+        f"{dias_sin_venta_cnt}",
+        delta_color="inverse" if dias_sin_venta_cnt > 0 else "off",
+        help="Días registrados explícitamente con venta = $0. "
+             "Un valor mayor a 0 indica días operativos sin ingresos (no días sin captura)."
+    )
+    # ── FIN CAMBIO 2 (continuación) ──────────────────────────────────────────────
 
     st.divider()
     if not df_mes.empty:
