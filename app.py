@@ -666,9 +666,9 @@ with st.sidebar:
 
     st.divider()
     st.write("**📦 Movimientos de Stock:**")
-    if st.button("📝 1. Capturar inventario",  use_container_width=True): cambiar_pagina("Inventario")
-    if st.button("📥 2. Entrada de compras",   use_container_width=True): cambiar_pagina("Ingresos")
-    if st.button("📦 3. Inventario actual",    use_container_width=True): cambiar_pagina("Consulta")
+    if st.button("📝 Capturar inventario",  use_container_width=True): cambiar_pagina("Inventario")
+    if st.button("📥 Entrada de compras",   use_container_width=True): cambiar_pagina("Ingresos")
+    if st.button("📦 Inventario actual",    use_container_width=True): cambiar_pagina("Consulta")
 
     st.divider()
     st.write("**💰 Ventas:**")
@@ -678,9 +678,9 @@ with st.sidebar:
 
     st.divider()
     st.write("**🖨️ Tickets (58mm):**")
-    if st.button("📋 1. Lista de Conteo",      use_container_width=True): cambiar_pagina("Impresion")
-    if st.button("🛒 2. Lista de Compra",      use_container_width=True): cambiar_pagina("ListaCompra")
-    if st.button("📦 3. Reporte de Stock",     use_container_width=True): cambiar_pagina("ReporteStock")
+    if st.button("📋 Lista de Conteo",      use_container_width=True): cambiar_pagina("Impresion")
+    if st.button("🛒 Lista de Compra",      use_container_width=True): cambiar_pagina("ListaCompra")
+    if st.button("📦 Reporte de Stock",     use_container_width=True): cambiar_pagina("ReporteStock")
 
     st.divider()
     with st.expander("ℹ️ Guía de Clasificación (Grupos)"):
@@ -715,9 +715,8 @@ Ejemplos: desengrasante, cloro, gel antibacterial, franelas, esponjas, cepillos 
 Productos para venta directa o preparación de alimentos. Revisión de fecha de caducidad en cada conteo.
 Ejemplos: pan para sándwich, pan dulce, muffins, galletas empacadas, snacks, fruta para decoración.
 
-**Grupo G — Retail, Utensilios y Otros**
-Todo lo que se vende como producto terminado o se usa como equipo de apoyo. Conteo menos frecuente pero registrar cualquier salida.
-Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, termómetros de barra, cucharas medidoras.
+**Grupo G — Compras pendientes**
+Todo lo que hace falta comprar para mejorar la operación de Noble.
         """)
 
     with st.expander("📊 Tabla Resumen de Grupos"):
@@ -728,7 +727,7 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
             {"Grupo":"D","Nombre":"Empaques y Desechables","Rutina":"Cada 2 días","Riesgo":"Medio","Almacén":"Bodega empaques","Nota":"Contar en piezas/rollos"},
             {"Grupo":"E","Nombre":"Suministros de Limpieza","Rutina":"Cada 2 días","Riesgo":"Bajo","Almacén":"Bodega limpieza","Nota":"Separar de alimentos"},
             {"Grupo":"F","Nombre":"Comida y Vitrina","Rutina":"Cada 2 días","Riesgo":"Alto","Almacén":"Vitrina / Refrigerador","Nota":"Verificar caducidad"},
-            {"Grupo":"G","Nombre":"Retail, Utensilios y Otros","Rutina":"Cada 2 días","Riesgo":"Bajo","Almacén":"Bodega general / Mostrador","Nota":"Registrar cada salida"},
+            {"Grupo":"G","Nombre":"Compras","Rutina":"Cada 2 días","Riesgo":"Bajo","Almacén":"Bodega general / Mostrador","Nota":"Registrar cada entrada"},
         ]
         st.dataframe(pd.DataFrame(grupos_info), hide_index=True, use_container_width=True)
 
