@@ -89,7 +89,6 @@ COLS_MERMA = [
     "ID", "Fecha", "Producto", "Ingrediente", "Cantidad", "Unidad_Medida",
     "Motivo", "Comentarios", "Costo_Unitario", "Costo_Total", "Responsable"
 ]
-# NUEVAS CONSTANTES
 COLS_COSTOS_INSUMOS = [
     "Nombre_Insumo", "Marca", "Proveedor", "Unidad_Medida", "Presentacion",
     "Costo_Presentacion", "Costo_Unitario", "Unidad_Costo", "Fecha_Captura", "Responsable"
@@ -543,7 +542,7 @@ def cargar_presupuesto():
         return pd.DataFrame(columns=COLS_PRESUPUESTO)
 
 # ============================================================
-# CARGA DE DATOS — BASE DE COSTOS (se mantiene para compatibilidad, pero ahora usaremos CostosInsumos)
+# CARGA DE DATOS — BASE DE COSTOS (se mantiene para compatibilidad)
 # ============================================================
 @st.cache_data(ttl=30)
 def cargar_base_costos():
@@ -636,7 +635,6 @@ def cargar_config_canales():
     except Exception:
         return pd.DataFrame(columns=COLS_CANALES_CONFIG)
 
-@st.cache_data(ttl=60)
 def cargar_permisos():
     if sh is None:
         return {"admin": ["*"], "barista": ["Dashboard","Inventario","Ingresos","Consulta","Impresion","ListaCompra","ReporteStock"]}
@@ -667,12 +665,12 @@ def tiene_permiso(pagina: str) -> bool:
         return False
     rol = st.session_state.user_role
     if rol == "admin":
-        return True  # admin all pages
+        return True
     if rol in PERMISOS:
         if "*" in PERMISOS[rol]:
             return True
         return pagina in PERMISOS[rol]
-    return True  # default allow if no config
+    return True
 
 # ============================================================
 # CARGA DE DATOS — MERMA
@@ -945,7 +943,6 @@ def _gauge(valor, minimo, maximo, titulo, sufijo="%", umbral_verde=80, umbral_am
     fig.update_layout(height=230, margin=dict(l=20, r=20, t=50, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-
 def _proyectar_tendencia(df_ventas: pd.DataFrame, meses_futuros: int = 6) -> pd.DataFrame:
     if df_ventas.empty:
         return pd.DataFrame()
@@ -993,6 +990,8 @@ _defaults = {
     "current_user": None,
     "user_role": None,
     "pagina": "Dashboard",
+    "ingredientes_receta": [],
+    "show_add_ing": False,
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -1233,7 +1232,6 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
         st.divider()
         with st.expander("🔐 Permisos de Módulos"):
             st.write("Asigna qué páginas puede ver cada rol.")
-            df_perm_mgr = cargar_permisos()
             all_pages = ["Dashboard","Inventario","Ingresos","Consulta","Ventas","DashboardVentas","ImportarVentas",
                          "RegistrarGasto","Presupuesto","BaseCostos","RegistrarMerma","DashboardFinanciero",
                          "CanalesVenta","Impresion","ListaCompra","ReporteStock","CorteMes"]
@@ -1251,7 +1249,6 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
                 if st.form_submit_button("💾 Guardar Permisos"):
                     if ws_perm:
                         try:
-                            # clear existing for this rol
                             data = ws_perm.get_all_values()
                             if len(data) > 1:
                                 df_old = pd.DataFrame(data[1:], columns=data[0])
@@ -1260,10 +1257,16 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
                                 ws_perm.append_row(COLS_PERMISOS)
                                 if not df_old.empty:
                                     ws_perm.append_rows(df_old.values.tolist())
+                            else:
+                                ws_perm.clear()
+                                ws_perm.append_row(COLS_PERMISOS)
                             new_rows = [[rol_perm, p] for p in paginas_sel]
                             if new_rows:
                                 ws_perm.append_rows(new_rows, value_input_option="USER_ENTERED")
                             st.cache_data.clear()
+                            # Recargar permisos globales inmediatamente
+                            global PERMISOS
+                            PERMISOS = cargar_permisos()
                             st.success("Permisos actualizados.")
                             time.sleep(1)
                             st.rerun()
@@ -1409,6 +1412,26 @@ if pagina == "Dashboard":
     if dias_faltantes <= 4:
         st.info(f"⏳ A {dias_faltantes} días del fin de mes. Recuerda ejecutar el **Corte de Mes**.")
 
+    # Venta acumulada del mes actual
+    st.subheader("💰 Venta acumulada del mes")
+    df_v_dash = cargar_ventas()
+    if not df_v_dash.empty:
+        df_v_mes_dash = df_v_dash[
+            (df_v_dash["Mes"].apply(limpiar_valor) == ahora.month) &
+            (df_v_dash["Año"].apply(limpiar_valor) == ahora.year)
+        ]
+        venta_acum_dash = df_v_mes_dash["Venta_Diaria"].sum() if not df_v_mes_dash.empty else 0.0
+        meta_mes_dash = 145000.0
+        if not df_v_mes_dash.empty and "Meta_Mensual" in df_v_mes_dash.columns:
+            meta_mes_dash = limpiar_valor(df_v_mes_dash["Meta_Mensual"].iloc[-1]) or meta_mes_dash
+        avance_dash = (venta_acum_dash / meta_mes_dash * 100) if meta_mes_dash > 0 else 0.0
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Venta acumulada", f"${venta_acum_dash:,.2f}")
+        c2.metric("Meta mensual", f"${meta_mes_dash:,.2f}")
+        c3.metric("Avance", f"{avance_dash:.1f}%")
+    else:
+        st.info("Aún no hay ventas registradas este mes.")
+
     df_actual = obtener_ultimo_inventario(df_historial)
 
     if not df_actual.empty:
@@ -1479,6 +1502,20 @@ if pagina == "Dashboard":
                   .head(15),
             use_container_width=True
         )
+
+        # Tabla unificada de compras (igual a ListaCompras)
+        st.divider()
+        st.subheader("🛒 Lista de compras (todas las unidades)")
+        com_global = df_actual[df_actual["Necesita Compra"] == True].copy()
+        if not com_global.empty:
+            cols_compra = ["Unidad de Negocio","Nombre del Insumo","Marca","Proveedor","Grupo",
+                           "Presentación de Compra","Unidad de Medida","Stock Neto Calculado",
+                           "Stock Mínimo","Necesita Compra","Responsable","Fecha de Inventario","Observaciones"]
+            cols_compra_ok = [c for c in cols_compra if c in com_global.columns]
+            st.dataframe(com_global[cols_compra_ok].sort_values(["Unidad de Negocio","Grupo"]),
+                         use_container_width=True, hide_index=True)
+        else:
+            st.success("✅ No hay insumos que necesiten compra.")
     else:
         st.info("Sin datos históricos. Ejecuta el primer conteo de inventario.")
 
@@ -1520,99 +1557,190 @@ elif pagina == "Inventario":
     if df_f.empty:
         st.info("Selecciona al menos un grupo para mostrar insumos.")
     else:
-        with st.form("form_inventario", clear_on_submit=False):
-            h1,h2,h3,h4,h5,h6,h7,h8 = st.columns([2.8,1.0,1.0,1.0,1.0,1.0,1.2,2.5])
-            for col, label in zip([h1,h2,h3,h4,h5,h6,h7,h8],
-                                  ["Insumo / Ref","Almacén","Barra (bruto)","Medida","Tara (gr)","Neto*","¿Pedir?","Observaciones"]):
-                col.write(f"**{label}**")
-            st.markdown("*Neto = Alm + (Barra − Tara). La Tara se descuenta solo de Barra.")
-            st.divider()
-
-            regs_form = {}
+        modo_bulk_inv = st.toggle("🚀 Activar Captura Masiva (Bulk)")
+        if modo_bulk_inv:
+            # Modo Bulk
+            st.subheader("Captura Masiva de Inventario")
+            # Construir dataframe de trabajo
+            bulk_data = []
             for idx_row, row in df_f.iterrows():
-                nom      = str(row.get("Nombre del Insumo",""))
-                safe_nom = re.sub(r'[^a-zA-Z0-9]','_', nom)[:35] + f"_{idx_row}"
-                prev        = buscar_insumo_en_actual(df_actual, nom)
-                v_prev      = prev["Stock Neto Calculado"] if prev is not None else 0.0
-                v_alm_prev  = limpiar_valor(prev["Alm"])   if prev is not None else 0.0
-                v_bar_prev  = limpiar_valor(prev["Barra"]) if prev is not None else 0.0
-                v_min       = limpiar_valor(row.get("Stock Mínimo",0))
+                nom = str(row.get("Nombre del Insumo",""))
+                prev = buscar_insumo_en_actual(df_actual, nom)
+                v_alm_prev = limpiar_valor(prev["Alm"]) if prev is not None else 0.0
+                v_bar_prev = limpiar_valor(prev["Barra"]) if prev is not None else 0.0
+                v_min = limpiar_valor(row.get("Stock Mínimo",0))
                 v_tara_hist = limpiar_valor(prev.get("Tara",0)) if prev is not None else 0.0
-                v_tara_cat  = limpiar_valor(row.get("Tara",0))
+                v_tara_cat = limpiar_valor(row.get("Tara",0))
                 v_tara_init = v_tara_hist if v_tara_hist > 0 else v_tara_cat
-
-                c1,c2,c3,c4,c5,c6,c7,c8 = st.columns([2.8,1.0,1.0,1.0,1.0,1.0,1.2,2.5])
-                with c1:
-                    st.write(f"**{nom}**")
-                    st.caption(f"Marca: {row.get('Marca','-')} | Prov: {row.get('Proveedor','-')}")
-                    diff  = v_prev - v_min
-                    color = "green" if diff >= 0 else "red"
-                    tara_txt = f" | Tara: {v_tara_init}" if v_tara_init > 0 else ""
-                    st.markdown(
-                        f"<small>Anterior: {v_prev} | Mín: {v_min} (<span style='color:{color}'>{diff:+.1f}</span>){tara_txt}</small>",
-                        unsafe_allow_html=True
-                    )
-                with c2:
-                    alm_key = f"a_{safe_nom}"
-                    if alm_key not in st.session_state: st.session_state[alm_key] = v_alm_prev
-                    v_a = st.number_input("Alm", min_value=0.0, step=1.0, key=alm_key, label_visibility="collapsed")
-                with c3:
-                    bar_key = f"b_{safe_nom}"
-                    if bar_key not in st.session_state: st.session_state[bar_key] = v_bar_prev
-                    v_b = st.number_input("Bar", min_value=0.0, step=1.0, key=bar_key, label_visibility="collapsed")
-                with c4:
-                    u_act = str(row.get("Unidad de Medida","pz")).lower()
-                    v_u = st.selectbox("U", UNIDADES_MED,
-                                       index=UNIDADES_MED.index(u_act) if u_act in UNIDADES_MED else 0,
-                                       key=f"u_{safe_nom}", label_visibility="collapsed")
-                with c5:
-                    tara_key = f"tara_{safe_nom}"
-                    if tara_key not in st.session_state: st.session_state[tara_key] = v_tara_init
-                    v_tara_manual = st.number_input("Tara", min_value=0.0, step=0.1,
-                                                    key=tara_key, label_visibility="collapsed")
-                with c6:
-                    v_b_neto    = max(0.0, v_b - v_tara_manual)
-                    v_n_display = v_a + v_b_neto
-                    st.write(f"**{v_n_display:.1f}**")
-                with c7:
-                    v_comprar_prev = bool(prev.get("Necesita Compra",False)) if prev is not None else False
-                    ck_key = f"p_{safe_nom}"
-                    if ck_key not in st.session_state: st.session_state[ck_key] = v_comprar_prev
-                    v_p = st.checkbox("🛒", key=ck_key)
-                with c8:
-                    v_c = st.text_input("Obs", key=f"c_{safe_nom}", label_visibility="collapsed", placeholder="Opcional")
-
-                regs_form[nom] = {"a":v_a,"b":v_b_neto,"n":v_n_display,"u":v_u,"p":v_p,"c":v_c,"tara":v_tara_manual,"row":row}
+                v_ud_med = str(row.get("Unidad de Medida","pz")).lower()
+                v_comp_prev = bool(prev.get("Necesita Compra",False)) if prev is not None else False
+                bulk_data.append({
+                    "Insumo": nom,
+                    "Almacén": v_alm_prev,
+                    "Barra": v_bar_prev,
+                    "Tara": v_tara_init,
+                    "Unidad Medida": v_ud_med,
+                    "Neto": v_alm_prev + max(0.0, v_bar_prev - v_tara_init),
+                    "¿Pedir?": v_comp_prev,
+                    "Observaciones": "",
+                    "row": row,
+                    "prev": prev,
+                    "stock_min": v_min,
+                })
+            df_bulk = pd.DataFrame(bulk_data)
+            # Configurar columnas editables
+            edited_df = st.data_editor(
+                df_bulk[["Insumo","Almacén","Barra","Tara","Unidad Medida","Neto","¿Pedir?","Observaciones"]],
+                column_config={
+                    "Insumo": st.column_config.TextColumn(disabled=True),
+                    "Almacén": st.column_config.NumberColumn(min_value=0.0, step=1.0),
+                    "Barra": st.column_config.NumberColumn(min_value=0.0, step=1.0),
+                    "Tara": st.column_config.NumberColumn(min_value=0.0, step=0.1),
+                    "Unidad Medida": st.column_config.SelectboxColumn(options=UNIDADES_MED),
+                    "Neto": st.column_config.NumberColumn(min_value=0.0, step=0.1),
+                    "¿Pedir?": st.column_config.CheckboxColumn(),
+                    "Observaciones": st.column_config.TextColumn()
+                },
+                hide_index=True,
+                use_container_width=True,
+                disabled=["Insumo"]
+            )
+            st.caption("Edita los valores directamente. El Neto es calculado como Alm + (Barra - Tara) por defecto, pero puedes sobrescribirlo.")
+            if st.button("📥 PROCESAR INVENTARIO BULK", type="primary", use_container_width=True):
+                ws_his, err = safe_worksheet(sh, "Historial")
+                if err:
+                    st.error(err)
+                else:
+                    fh = ts_hermosillo()
+                    filas = []
+                    for _, r_ed in edited_df.iterrows():
+                        nom = r_ed["Insumo"]
+                        orig = next((x for x in bulk_data if x["Insumo"] == nom), None)
+                        if orig is None: continue
+                        alm = limpiar_valor(r_ed["Almacén"])
+                        barra = limpiar_valor(r_ed["Barra"])
+                        tara = limpiar_valor(r_ed["Tara"])
+                        neto_input = limpiar_valor(r_ed["Neto"])
+                        # Si el usuario no cambió neto, calcular automático
+                        if neto_input == 0.0 and (alm > 0 or barra > 0 or tara > 0):
+                            neto = alm + max(0.0, barra - tara)
+                        else:
+                            neto = neto_input
+                        comprar = bool(r_ed["¿Pedir?"])
+                        obs = str(r_ed.get("Observaciones",""))
+                        dm = orig["row"]
+                        filas.append(construir_fila_historial(
+                            unidad=u_sel, nombre=nom, marca=dm.get("Marca",""),
+                            proveedor=dm.get("Proveedor",""), grupo=dm.get("Grupo",""),
+                            fecha_entrada="", presentacion=dm.get("Presentación de Compra",""),
+                            unidad_medida=r_ed["Unidad Medida"], alm=alm, barra=barra,
+                            stock_neto=neto, stock_minimo=orig["stock_min"],
+                            comprar=comprar, responsable=r_sel, fecha_inventario=fh,
+                            tara=tara, observaciones=obs,
+                        ))
+                    ok, msg = append_rows_con_retry(ws_his, filas)
+                    if ok:
+                        st.cache_data.clear()
+                        st.success(f"Inventario masivo registrado: {len(filas)} insumos. {msg}")
+                        time.sleep(0.5)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+        else:
+            # Modo regular existente
+            with st.form("form_inventario", clear_on_submit=False):
+                h1,h2,h3,h4,h5,h6,h7,h8 = st.columns([2.8,1.0,1.0,1.0,1.0,1.0,1.2,2.5])
+                for col, label in zip([h1,h2,h3,h4,h5,h6,h7,h8],
+                                      ["Insumo / Ref","Almacén","Barra (bruto)","Medida","Tara (gr)","Neto*","¿Pedir?","Observaciones"]):
+                    col.write(f"**{label}**")
+                st.markdown("*Neto = Alm + (Barra − Tara). La Tara se descuenta solo de Barra.")
                 st.divider()
 
-            btn_inv = st.form_submit_button("📥 PROCESAR INVENTARIO", use_container_width=True, type="primary")
+                regs_form = {}
+                for idx_row, row in df_f.iterrows():
+                    nom      = str(row.get("Nombre del Insumo",""))
+                    safe_nom = re.sub(r'[^a-zA-Z0-9]','_', nom)[:35] + f"_{idx_row}"
+                    prev        = buscar_insumo_en_actual(df_actual, nom)
+                    v_prev      = prev["Stock Neto Calculado"] if prev is not None else 0.0
+                    v_alm_prev  = limpiar_valor(prev["Alm"])   if prev is not None else 0.0
+                    v_bar_prev  = limpiar_valor(prev["Barra"]) if prev is not None else 0.0
+                    v_min       = limpiar_valor(row.get("Stock Mínimo",0))
+                    v_tara_hist = limpiar_valor(prev.get("Tara",0)) if prev is not None else 0.0
+                    v_tara_cat  = limpiar_valor(row.get("Tara",0))
+                    v_tara_init = v_tara_hist if v_tara_hist > 0 else v_tara_cat
 
-        if btn_inv:
-            ws_his, err = safe_worksheet(sh, "Historial")
-            if err:
-                st.error(err)
-            else:
-                fh    = ts_hermosillo()
-                filas = []
-                for n, info in regs_form.items():
-                    dm = info["row"]
-                    filas.append(construir_fila_historial(
-                        unidad=u_sel, nombre=n, marca=dm.get("Marca",""),
-                        proveedor=dm.get("Proveedor",""), grupo=dm.get("Grupo",""),
-                        fecha_entrada="", presentacion=dm.get("Presentación de Compra",""),
-                        unidad_medida=info["u"], alm=info["a"], barra=info["b"],
-                        stock_neto=info["n"], stock_minimo=dm.get("Stock Mínimo",0),
-                        comprar=info["p"], responsable=r_sel, fecha_inventario=fh,
-                        tara=info["tara"], observaciones=info["c"],
-                    ))
-                ok, msg = append_rows_con_retry(ws_his, filas)
-                if ok:
-                    st.cache_data.clear()
-                    st.success(f"¡Inventario registrado! {msg}")
-                    time.sleep(0.5)
-                    st.rerun()
+                    c1,c2,c3,c4,c5,c6,c7,c8 = st.columns([2.8,1.0,1.0,1.0,1.0,1.0,1.2,2.5])
+                    with c1:
+                        st.write(f"**{nom}**")
+                        st.caption(f"Marca: {row.get('Marca','-')} | Prov: {row.get('Proveedor','-')}")
+                        diff  = v_prev - v_min
+                        color = "green" if diff >= 0 else "red"
+                        tara_txt = f" | Tara: {v_tara_init}" if v_tara_init > 0 else ""
+                        st.markdown(
+                            f"<small>Anterior: {v_prev} | Mín: {v_min} (<span style='color:{color}'>{diff:+.1f}</span>){tara_txt}</small>",
+                            unsafe_allow_html=True
+                        )
+                    with c2:
+                        alm_key = f"a_{safe_nom}"
+                        if alm_key not in st.session_state: st.session_state[alm_key] = v_alm_prev
+                        v_a = st.number_input("Alm", min_value=0.0, step=1.0, key=alm_key, label_visibility="collapsed")
+                    with c3:
+                        bar_key = f"b_{safe_nom}"
+                        if bar_key not in st.session_state: st.session_state[bar_key] = v_bar_prev
+                        v_b = st.number_input("Bar", min_value=0.0, step=1.0, key=bar_key, label_visibility="collapsed")
+                    with c4:
+                        u_act = str(row.get("Unidad de Medida","pz")).lower()
+                        v_u = st.selectbox("U", UNIDADES_MED,
+                                           index=UNIDADES_MED.index(u_act) if u_act in UNIDADES_MED else 0,
+                                           key=f"u_{safe_nom}", label_visibility="collapsed")
+                    with c5:
+                        tara_key = f"tara_{safe_nom}"
+                        if tara_key not in st.session_state: st.session_state[tara_key] = v_tara_init
+                        v_tara_manual = st.number_input("Tara", min_value=0.0, step=0.1,
+                                                        key=tara_key, label_visibility="collapsed")
+                    with c6:
+                        v_b_neto    = max(0.0, v_b - v_tara_manual)
+                        v_n_display = v_a + v_b_neto
+                        st.write(f"**{v_n_display:.1f}**")
+                    with c7:
+                        v_comprar_prev = bool(prev.get("Necesita Compra",False)) if prev is not None else False
+                        ck_key = f"p_{safe_nom}"
+                        if ck_key not in st.session_state: st.session_state[ck_key] = v_comprar_prev
+                        v_p = st.checkbox("🛒", key=ck_key)
+                    with c8:
+                        v_c = st.text_input("Obs", key=f"c_{safe_nom}", label_visibility="collapsed", placeholder="Opcional")
+
+                    regs_form[nom] = {"a":v_a,"b":v_b_neto,"n":v_n_display,"u":v_u,"p":v_p,"c":v_c,"tara":v_tara_manual,"row":row}
+                    st.divider()
+
+                btn_inv = st.form_submit_button("📥 PROCESAR INVENTARIO", use_container_width=True, type="primary")
+
+            if btn_inv:
+                ws_his, err = safe_worksheet(sh, "Historial")
+                if err:
+                    st.error(err)
                 else:
-                    st.error(msg)
+                    fh    = ts_hermosillo()
+                    filas = []
+                    for n, info in regs_form.items():
+                        dm = info["row"]
+                        filas.append(construir_fila_historial(
+                            unidad=u_sel, nombre=n, marca=dm.get("Marca",""),
+                            proveedor=dm.get("Proveedor",""), grupo=dm.get("Grupo",""),
+                            fecha_entrada="", presentacion=dm.get("Presentación de Compra",""),
+                            unidad_medida=info["u"], alm=info["a"], barra=info["b"],
+                            stock_neto=info["n"], stock_minimo=dm.get("Stock Mínimo",0),
+                            comprar=info["p"], responsable=r_sel, fecha_inventario=fh,
+                            tara=info["tara"], observaciones=info["c"],
+                        ))
+                    ok, msg = append_rows_con_retry(ws_his, filas)
+                    if ok:
+                        st.cache_data.clear()
+                        st.success(f"¡Inventario registrado! {msg}")
+                        time.sleep(0.5)
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
 # ── INGRESOS ─────────────────────────────────────────────────
 elif pagina == "Ingresos":
@@ -2255,7 +2383,6 @@ elif pagina == "ListaCompra":
         st.stop()
     com = df_actual[df_actual["Necesita Compra"] == True].copy()
     if not com.empty:
-        # Mostrar tabla interactiva
         st.subheader("📋 Insumos con necesidad de compra")
         cols_compra = ["Unidad de Negocio","Nombre del Insumo","Marca","Proveedor","Grupo",
                        "Presentación de Compra","Unidad de Medida","Stock Neto Calculado",
@@ -2263,7 +2390,6 @@ elif pagina == "ListaCompra":
         cols_compra_ok = [c for c in cols_compra if c in com.columns]
         st.dataframe(com[cols_compra_ok].sort_values(["Unidad de Negocio","Grupo"]),
                      use_container_width=True, hide_index=True)
-        # Opción PDF adicional
         with st.expander("🖨️ Descargar PDF (58mm)"):
             lineas_pdf = [
                 (f"* COMPRAS {u_opcion.upper() if u_opcion!='Todas' else 'GLOBAL'} *", "title"),
@@ -2605,15 +2731,13 @@ elif pagina == "BaseCostos":
     with tab_costos:
         st.subheader("Registro de Costo de Insumos (desde catálogo)")
         df_ci = cargar_costos_insumos()
-        # Cargar catálogo de insumos activos
-        df_cat = cargar_datos_integrales()[0]  # solo insumos activos
+        df_cat = cargar_datos_integrales()[0]
         if df_cat.empty:
             st.warning("No hay insumos activos en el catálogo.")
         else:
             with st.form("f_costo_insumo", clear_on_submit=True):
                 insumo_opts = sorted(df_cat["Nombre del Insumo"].dropna().unique())
                 insumo_sel = st.selectbox("Selecciona el Insumo:", insumo_opts)
-                # Obtener datos del catálogo para pre-rellenar
                 mask_cat = df_cat["Nombre del Insumo"] == insumo_sel
                 info_cat = {}
                 if mask_cat.any():
@@ -2645,7 +2769,6 @@ elif pagina == "BaseCostos":
                             else:
                                 st.error(msg)
 
-        # Mostrar costos registrados
         st.subheader("📋 Costos registrados")
         if not df_ci.empty:
             df_ci_latest = df_ci.sort_values("Fecha_Captura").drop_duplicates(subset=["Nombre_Insumo"], keep="last")
@@ -2659,11 +2782,8 @@ elif pagina == "BaseCostos":
         df_rec = cargar_recetas()
         df_ci2 = cargar_costos_insumos()
         df_cat2 = cargar_datos_integrales()[0]
-        # Inicializar sesión de ingredientes si no existe
-        if "ingredientes_receta" not in st.session_state:
-            st.session_state.ingredientes_receta = []  # lista de dicts: {insumo, cantidad, unidad_medida, costo_unit}
-        # Selector de receta para editar
         recetas_existentes = sorted(df_rec["Receta"].unique()) if not df_rec.empty else []
+
         modo_receta = st.radio("Modo:", ["Nueva receta", "Editar receta existente"])
         if modo_receta == "Editar receta existente":
             if recetas_existentes:
@@ -2690,10 +2810,9 @@ elif pagina == "BaseCostos":
             with col_rec2:
                 precio_venta_rec = st.number_input("Precio de Venta ($):", min_value=0.0, step=5.0)
                 factor_rec = st.number_input("Factor de precio sugerido:", min_value=0.1, step=0.1, value=2.5)
-            # Mostrar ingredientes actuales
+
             st.subheader("Ingredientes")
             if st.session_state.ingredientes_receta:
-                # Calcular costo total y sugerencia
                 costo_total_rec = sum(
                     (ing["cantidad"] * ing["costo_unit"]) if ing["costo_unit"] else 0.0
                     for ing in st.session_state.ingredientes_receta
@@ -2717,7 +2836,7 @@ elif pagina == "BaseCostos":
                     if st.button("❌", key=f"del_ing_{i}"):
                         st.session_state.ingredientes_receta.pop(i)
                         st.rerun()
-            # Botón agregar nuevo ingrediente
+
             if "show_add_ing" not in st.session_state:
                 st.session_state.show_add_ing = False
             if st.button("➕ Agregar otro ingrediente"):
@@ -2727,14 +2846,12 @@ elif pagina == "BaseCostos":
                 insumo_opt = sorted(df_cat2["Nombre del Insumo"].dropna().unique()) if not df_cat2.empty else []
                 insumo_add = st.selectbox("Ingrediente:", insumo_opt, key="add_ing_sel")
                 cantidad_add = st.number_input("Cantidad:", min_value=0.0, step=0.1, key="add_cant")
-                # Buscar costo unitario más reciente de CostosInsumos
                 costo_uni_add = 0.0
                 if not df_ci2.empty:
                     mask_ci = df_ci2["Nombre_Insumo"] == insumo_add
                     if mask_ci.any():
                         costo_uni_add = limpiar_valor(df_ci2[mask_ci].sort_values("Fecha_Captura").iloc[-1]["Costo_Unitario"])
                 st.write(f"Costo Unitario: ${costo_uni_add:.4f}")
-                # Unidad de medida del catálogo
                 ud_med_add = str(df_cat2[df_cat2["Nombre del Insumo"]==insumo_add].iloc[0].get("Unidad de Medida","pz"))
                 if st.button("Agregar a la receta"):
                     st.session_state.ingredientes_receta.append({
@@ -2745,7 +2862,7 @@ elif pagina == "BaseCostos":
                     })
                     st.session_state.show_add_ing = False
                     st.rerun()
-            # Guardar receta
+
             if st.form_submit_button("💾 Guardar Receta"):
                 if not nombre_receta.strip():
                     st.error("El nombre de la receta es obligatorio.")
@@ -2756,7 +2873,6 @@ elif pagina == "BaseCostos":
                     if err:
                         st.error(err)
                     else:
-                        # Si es edición, borrar filas anteriores de esa receta
                         if modo_receta == "Editar receta existente" and receta_edit_sel:
                             all_data = ws_rec.get_all_values()
                             if len(all_data) > 1:
@@ -2766,7 +2882,6 @@ elif pagina == "BaseCostos":
                                 ws_rec.append_row(COLS_RECETAS)
                                 if not df_all.empty:
                                     ws_rec.append_rows(df_all.values.tolist())
-                        # Construir filas
                         filas_rec = []
                         costo_total_r = 0.0
                         for ing in st.session_state.ingredientes_receta:
@@ -2789,7 +2904,6 @@ elif pagina == "BaseCostos":
                         else:
                             st.error(msg)
 
-        # Mostrar recetas existentes
         if not df_rec.empty:
             st.subheader("📋 Recetas registradas")
             df_rec_s = df_rec.copy()
@@ -2807,7 +2921,7 @@ elif pagina == "RegistrarMerma":
         st.stop()
 
     df_merma_reg = cargar_merma()
-    df_bc_m      = cargar_costos_insumos()  # usando nueva hoja
+    df_bc_m      = cargar_costos_insumos()
 
     ingredientes_con_costo = []
     if not df_bc_m.empty:
@@ -2843,7 +2957,7 @@ elif pagina == "RegistrarMerma":
                 if costo_unit_m > 0:
                     st.info(f"💵 Costo estimado: **${costo_total_m:,.4f}** ({cantidad_m} × ${costo_unit_m}/unidad)")
                 else:
-                    st.warning("⚠️ Ingrediente encontrado pero sin costo unitario. Ingresa el costo unitario en Costos de Insumos.")
+                    st.warning("⚠️ Ingrediente encontrado pero sin costo unitario.")
 
         responsables_m = st.session_state.responsables or ["Raúl"]
         resp_idx_m = responsables_m.index(st.session_state.current_user) if st.session_state.current_user in responsables_m else 0
@@ -2911,17 +3025,14 @@ elif pagina == "CanalesVenta":
         st.stop()
 
     df_cfg = cargar_config_canales()
-    # Asegurar hoja de configuración
     _asegurar_hoja_config_canales()
 
     tab_can1, tab_can2 = st.tabs(["📋 Registrar Evento", "⚙️ Gestionar Canales"])
 
     with tab_can2:
         st.subheader("Configuración de Canales")
-        # Mostrar canales actuales
         if not df_cfg.empty:
             st.dataframe(df_cfg, hide_index=True, use_container_width=True)
-        # Agregar nuevo canal
         with st.form("f_new_canal"):
             canal_nombre = st.text_input("Nombre del Canal:")
             tipo_meta = st.selectbox("Tipo de Meta:", ["mensual", "fija"])
@@ -2933,12 +3044,10 @@ elif pagina == "CanalesVenta":
                 else:
                     ws_cfg, err = _asegurar_hoja_config_canales()
                     if not err:
-                        # Verificar que no exista
                         if not df_cfg.empty and canal_nombre in df_cfg["Canal"].values:
                             st.error("El canal ya existe.")
                         else:
                             ws_cfg.append_row([canal_nombre, tipo_meta, meta_valor, notas_canal], value_input_option="USER_ENTERED")
-                            # Crear hoja para el canal
                             _asegurar_hoja_canal(canal_nombre)
                             st.cache_data.clear()
                             st.success(f"Canal '{canal_nombre}' creado.")
@@ -2988,7 +3097,6 @@ elif pagina == "CanalesVenta":
                             else:
                                 st.error(msg)
 
-        # Mostrar eventos recientes
         st.divider()
         st.subheader("📋 Eventos recientes")
         if canales_list:
@@ -3018,7 +3126,7 @@ elif pagina == "DashboardFinanciero":
     df_vf     = cargar_ventas()
     df_gf     = cargar_gastos()
     df_pptof  = cargar_presupuesto()
-    df_bcf    = cargar_costos_insumos()  # actualizado a nueva hoja
+    df_bcf    = cargar_costos_insumos()
     df_mermaf = cargar_merma()
     df_cfg_canales = cargar_config_canales()
 
@@ -3216,7 +3324,6 @@ elif pagina == "DashboardFinanciero":
             )
             st.plotly_chart(fig_trend, use_container_width=True)
         elif not df_trend.empty:
-            # Fallback corregido: usar etiquetas en lugar de idx
             df_real_tr = df_trend[df_trend["tipo"]=="real"][["Año_num","Mes_num","Venta_Diaria"]].copy()
             df_real_tr["label"] = df_real_tr.apply(
                 lambda r: f"{calendar.month_abbr[int(r['Mes_num'])]} {int(r['Año_num'])}", axis=1
@@ -3248,7 +3355,6 @@ elif pagina == "DashboardFinanciero":
         if df_bcf.empty:
             st.info("Sin datos en Costos de Insumos. Ve a '🧾 Base de Costos' para registrar tus costos.")
         else:
-            # Usamos recetas si existen, sino costos directos
             df_rec_fc = cargar_recetas()
             if not df_rec_fc.empty:
                 df_por_prod = (
@@ -3267,10 +3373,8 @@ elif pagina == "DashboardFinanciero":
                     lambda r: round(r["Margen_Bruto"]/r["Precio_Venta"]*100, 1) if r["Precio_Venta"] > 0 else 0.0, axis=1
                 )
                 st.success("Datos tomados de recetas registradas.")
-                # Mostrar gráficas y tabla como antes, pero con campo Producto = Receta
                 df_por_prod.rename(columns={"Receta":"Producto"}, inplace=True)
             else:
-                # Fallback a costos directos
                 df_bcf_s = df_bcf.copy()
                 df_bcf_s["Fecha_Captura"] = pd.to_datetime(df_bcf_s["Fecha_Captura"], errors="coerce")
                 df_bcf_latest = (
@@ -3280,7 +3384,7 @@ elif pagina == "DashboardFinanciero":
                 df_por_prod = df_bcf_latest[["Nombre_Insumo"]].copy()
                 df_por_prod["Producto"] = df_por_prod["Nombre_Insumo"]
                 df_por_prod["Costo_Receta"] = df_bcf_latest["Costo_Presentacion"]
-                df_por_prod["Precio_Venta"] = df_bcf_latest["Costo_Presentacion"] * 2  # dummy
+                df_por_prod["Precio_Venta"] = df_bcf_latest["Costo_Presentacion"] * 2
                 df_por_prod["Food_Cost_Pct"] = 50.0
                 df_por_prod["Margen_Bruto"] = df_por_prod["Precio_Venta"] - df_por_prod["Costo_Receta"]
                 df_por_prod["Margen_Pct"] = 50.0
@@ -3520,7 +3624,6 @@ elif pagina == "DashboardFinanciero":
         if df_cfg_canales.empty:
             st.info("No hay canales configurados. Usa la página 'Canales de Venta' para crear tus canales adicionales.")
         else:
-            # Acumulados por canal
             canales_data = {}
             for _, canal_row in df_cfg_canales.iterrows():
                 cn = canal_row["Canal"]
@@ -3535,7 +3638,6 @@ elif pagina == "DashboardFinanciero":
             if not canales_data:
                 st.info("Aún no hay eventos registrados en los canales.")
             else:
-                # Total acumulado por canal
                 acum_can = []
                 total_general = 0.0
                 for cn, df_cn in canales_data.items():
@@ -3551,7 +3653,6 @@ elif pagina == "DashboardFinanciero":
                     fig_can_adic = px.bar(df_acum, x="Canal", y="Total", title="Ventas por Canal Adicional", color="Total")
                     st.plotly_chart(fig_can_adic, use_container_width=True)
 
-                # Evolución mensual (todos los canales combinados)
                 st.subheader("Ventas mensuales de canales adicionales")
                 df_all_ev = pd.concat(canales_data.values(), ignore_index=True)
                 df_all_ev["Mes"] = df_all_ev["Fecha"].dt.month
