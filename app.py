@@ -1265,7 +1265,6 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
                                 ws_perm.append_rows(new_rows, value_input_option="USER_ENTERED")
                             st.cache_data.clear()
                             # Recargar permisos globales inmediatamente
-                            global PERMISOS
                             PERMISOS = cargar_permisos()
                             st.success("Permisos actualizados.")
                             time.sleep(1)
@@ -1561,7 +1560,6 @@ elif pagina == "Inventario":
         if modo_bulk_inv:
             # Modo Bulk
             st.subheader("Captura Masiva de Inventario")
-            # Construir dataframe de trabajo
             bulk_data = []
             for idx_row, row in df_f.iterrows():
                 nom = str(row.get("Nombre del Insumo",""))
@@ -1588,7 +1586,6 @@ elif pagina == "Inventario":
                     "stock_min": v_min,
                 })
             df_bulk = pd.DataFrame(bulk_data)
-            # Configurar columnas editables
             edited_df = st.data_editor(
                 df_bulk[["Insumo","Almacén","Barra","Tara","Unidad Medida","Neto","¿Pedir?","Observaciones"]],
                 column_config={
@@ -1621,7 +1618,6 @@ elif pagina == "Inventario":
                         barra = limpiar_valor(r_ed["Barra"])
                         tara = limpiar_valor(r_ed["Tara"])
                         neto_input = limpiar_valor(r_ed["Neto"])
-                        # Si el usuario no cambió neto, calcular automático
                         if neto_input == 0.0 and (alm > 0 or barra > 0 or tara > 0):
                             neto = alm + max(0.0, barra - tara)
                         else:
