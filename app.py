@@ -10,6 +10,7 @@ import re
 import io
 import threading
 import time as _time
+import numpy as np
 
 try:
     from reportlab.lib.pagesizes import landscape
@@ -18,6 +19,13 @@ try:
     REPORTLAB_OK = True
 except ImportError:
     REPORTLAB_OK = False
+
+try:
+    import plotly.graph_objects as go
+    import plotly.express as px
+    PLOTLY_OK = True
+except ImportError:
+    PLOTLY_OK = False
 
 st.set_page_config(layout="wide")
 
@@ -47,7 +55,7 @@ COLS_INSUMOS = [
     "Unidad de Negocio", "Nombre del Insumo", "Marca", "Proveedor", "Grupo",
     "Espacio_1", "Presentación de Compra", "Unidad de Medida",
     "Espacio_2", "Espacio_3", "Espacio_4", "Stock Mínimo",
-    "Espacio_5", "Espacio_6", "Espacio_7", "Espacio_8", "Tara", "Activo",  # ← NUEVO: "Activo" en columna R (índice 17)
+    "Espacio_5", "Espacio_6", "Espacio_7", "Espacio_8", "Tara", "Activo",
 ]
 COLS_HISTORIAL = [
     "Unidad de Negocio", "Nombre del Insumo", "Marca", "Proveedor", "Grupo",
@@ -65,6 +73,36 @@ COLS_VENTAS  = [
     "Ticket_Promedio", "Meta_Mensual", "Dias_Habiles", "Meta_Diaria",
     "Responsable", "Notas",
 ]
+COLS_GASTOS = [
+    "ID", "Fecha", "Periodo", "Tipo", "Categoria", "Concepto",
+    "Monto", "Responsable", "Notas"
+]
+COLS_PRESUPUESTO = [
+    "Año", "Mes", "Meta_Total", "Meta_POS", "Meta_Uber", "Meta_Rappi", "Notas"
+]
+COLS_BASE_COSTOS = [
+    "Producto", "Ingrediente", "Marca", "Proveedor", "Unidad_Medida",
+    "Presentacion", "Costo_Total", "Costo_Unitario", "Unidad_Costo",
+    "Precio_Venta", "Food_Cost_Pct", "Fecha_Captura", "Responsable"
+]
+COLS_MERMA = [
+    "ID", "Fecha", "Producto", "Ingrediente", "Cantidad", "Unidad_Medida",
+    "Motivo", "Comentarios", "Costo_Unitario", "Costo_Total", "Responsable"
+]
+COLS_COSTOS_INSUMOS = [
+    "Nombre_Insumo", "Marca", "Proveedor", "Unidad_Medida", "Presentacion",
+    "Costo_Presentacion", "Costo_Unitario", "Unidad_Costo", "Fecha_Captura", "Responsable"
+]
+COLS_RECETAS = [
+    "Receta", "Ingrediente", "Cantidad", "Unidad_Medida", "Costo_Ingrediente",
+    "Precio_Venta", "Food_Cost_Pct", "Fecha_Captura", "Responsable"
+]
+COLS_CANALES_CONFIG = ["Canal", "Tipo_Meta", "Meta_Valor", "Notas"]
+COLS_EVENTO_CANAL = [
+    "Canal", "Fecha", "Monto", "Descripcion", "Fecha_Servicio_Entrega",
+    "Metodo_Pago", "Responsable", "Adeudo_Saldo_Pendiente"
+]
+COLS_PERMISOS = ["Rol", "Pagina"]
 
 COLS_CRITICAS_INSUMOS   = {"Nombre del Insumo", "Grupo", "Stock Mínimo"}
 COLS_CRITICAS_HISTORIAL = {"Nombre del Insumo", "Alm", "Barra", "Fecha de Inventario"}
@@ -265,16 +303,13 @@ def _migrar_encabezado_tara():
         except Exception:
             pass
 
-    # ← NUEVO: migrar encabezado "Activo" en columna R de la pestaña Insumos
     IDX_ACTIVO_INS = COLS_INSUMOS.index("Activo")
-    col_activo = chr(ord("A") + IDX_ACTIVO_INS)  # = "R"
+    col_activo = chr(ord("A") + IDX_ACTIVO_INS)
     if ws_ins is not None:
         try:
             encabezados_actuales = ws_ins.row_values(1)
             if "Activo" not in encabezados_actuales:
                 ws_ins.update(range_name=f"{col_activo}1", values=[["Activo"]])
-                # ← NUEVO: para filas existentes sin valor en columna R,
-                #           establecer TRUE por defecto (no romper insumos ya activos)
                 todos_los_valores = ws_ins.get_all_values()
                 num_filas = len(todos_los_valores)
                 if num_filas > 1:
@@ -288,7 +323,6 @@ def _migrar_encabezado_tara():
                         ws_ins.update(range_name=celda_ref, values=[[val]])
         except Exception:
             pass
-    # ← FIN NUEVO
 
     st.session_state["_tara_migrada"] = True
 
@@ -328,19 +362,12 @@ def cargar_datos_integrales():
         df_ins = normalizar_dataframe(df_ins, COLS_INSUMOS + ["Sheet_Row_Num"],
                                       cols_criticas=COLS_CRITICAS_INSUMOS)
 
-        # ← NUEVO: filtrar df_ins para que las vistas de Captura e Inventario
-        #           solo vean insumos activos (columna R = "Activo" == "TRUE").
-        #           Se aplica ÚNICAMENTE sobre df_ins (catálogo).
-        #           df_his y df_cie NO se filtran: los datos históricos se preservan íntegros.
         if "Activo" in df_ins.columns:
             df_ins_activos = df_ins[
                 df_ins["Activo"].astype(str).str.strip().str.upper() == "TRUE"
             ].copy()
         else:
-            # Si la columna aún no existe en el sheet (antes de la migración),
-            # tratamos todos los insumos como activos para no romper nada.
             df_ins_activos = df_ins.copy()
-        # ← FIN NUEVO
 
         df_his = normalizar_dataframe(df_his, COLS_HISTORIAL,
                                       cols_criticas=COLS_CRITICAS_HISTORIAL)
@@ -355,13 +382,8 @@ def cargar_datos_integrales():
             df_total["Fecha de Inventario"] = pd.to_datetime(df_total["Fecha de Inventario"], errors="coerce")
             df_total["Fecha de Entrada"]    = pd.to_datetime(df_total["Fecha de Entrada"], errors="coerce")
 
-            # ← NUEVO: el merge de metadatos del catálogo usa df_ins_activos para enriquecer
-            #           el historial. Sin embargo, filas históricas de insumos desactivados
-            #           siguen presentes en df_total (solo quedan sin metadatos actualizados
-            #           del catálogo, lo cual es correcto: preservan sus propios valores históricos).
             if not df_ins_activos.empty:
                 df_ins_m = df_ins_activos.copy()
-            # ← FIN NUEVO
             elif not df_ins.empty:
                 df_ins_m = df_ins.copy()
             else:
@@ -394,13 +416,7 @@ def cargar_datos_integrales():
                 df_total.drop(columns=["Tara_hist","Tara_cat","_clave","_nom_norm"],
                               inplace=True, errors="ignore")
 
-        # ← NUEVO: devolver df_ins_activos como primer elemento del tuple,
-        #           en lugar del df_ins completo (que incluía insumos desactivados).
-        #           Todas las páginas que usan df_raw (Inventario, Ingresos, Impresion, Sidebar)
-        #           recibirán automáticamente solo insumos activos.
-        #           df_total (historial) permanece sin filtrar.
         return df_ins_activos, df_total
-        # ← FIN NUEVO
 
     except Exception as e:
         st.error(f"Falla en extracción de datos: {e}")
@@ -474,6 +490,213 @@ def cargar_ventas():
     except Exception as e:
         st.warning(f"Error cargando ventas: {e}")
         return pd.DataFrame()
+
+# ============================================================
+# CARGA DE DATOS — GASTOS
+# ============================================================
+@st.cache_data(ttl=30)
+def cargar_gastos():
+    if sh is None:
+        return pd.DataFrame(columns=COLS_GASTOS)
+    ws, err = safe_worksheet(sh, "Gastos")
+    if err:
+        return pd.DataFrame(columns=COLS_GASTOS)
+    try:
+        data = ws.get_all_values()
+        if len(data) < 2:
+            return pd.DataFrame(columns=COLS_GASTOS)
+        df = pd.DataFrame(data[1:], columns=data[0])
+        for col in COLS_GASTOS:
+            if col not in df.columns:
+                df[col] = ""
+        df["Monto"] = df["Monto"].apply(limpiar_valor)
+        return df
+    except Exception as e:
+        st.warning(f"Error cargando gastos: {e}")
+        return pd.DataFrame(columns=COLS_GASTOS)
+
+# ============================================================
+# CARGA DE DATOS — PRESUPUESTO
+# ============================================================
+@st.cache_data(ttl=30)
+def cargar_presupuesto():
+    if sh is None:
+        return pd.DataFrame(columns=COLS_PRESUPUESTO)
+    ws, err = safe_worksheet(sh, "Presupuesto")
+    if err:
+        return pd.DataFrame(columns=COLS_PRESUPUESTO)
+    try:
+        data = ws.get_all_values()
+        if len(data) < 2:
+            return pd.DataFrame(columns=COLS_PRESUPUESTO)
+        df = pd.DataFrame(data[1:], columns=data[0])
+        for col in COLS_PRESUPUESTO:
+            if col not in df.columns:
+                df[col] = ""
+        for col in ["Meta_Total","Meta_POS","Meta_Uber","Meta_Rappi"]:
+            if col in df.columns:
+                df[col] = df[col].apply(limpiar_valor)
+        return df
+    except Exception as e:
+        st.warning(f"Error cargando presupuesto: {e}")
+        return pd.DataFrame(columns=COLS_PRESUPUESTO)
+
+# ============================================================
+# CARGA DE DATOS — BASE DE COSTOS (se mantiene para compatibilidad)
+# ============================================================
+@st.cache_data(ttl=30)
+def cargar_base_costos():
+    if sh is None:
+        return pd.DataFrame(columns=COLS_BASE_COSTOS)
+    ws, err = safe_worksheet(sh, "BaseCostos")
+    if err:
+        return pd.DataFrame(columns=COLS_BASE_COSTOS)
+    try:
+        data = ws.get_all_values()
+        if len(data) < 2:
+            return pd.DataFrame(columns=COLS_BASE_COSTOS)
+        df = pd.DataFrame(data[1:], columns=data[0])
+        for col in COLS_BASE_COSTOS:
+            if col not in df.columns:
+                df[col] = ""
+        for col in ["Costo_Total","Costo_Unitario","Precio_Venta","Food_Cost_Pct"]:
+            if col in df.columns:
+                df[col] = df[col].apply(limpiar_valor)
+        return df
+    except Exception as e:
+        st.warning(f"Error cargando base de costos: {e}")
+        return pd.DataFrame(columns=COLS_BASE_COSTOS)
+
+# ============================================================
+# NUEVAS CARGAS: CostosInsumos y Recetas
+# ============================================================
+@st.cache_data(ttl=30)
+def cargar_costos_insumos():
+    if sh is None:
+        return pd.DataFrame(columns=COLS_COSTOS_INSUMOS)
+    ws, err = safe_worksheet(sh, "CostosInsumos")
+    if err:
+        return pd.DataFrame(columns=COLS_COSTOS_INSUMOS)
+    try:
+        data = ws.get_all_values()
+        if len(data) < 2:
+            return pd.DataFrame(columns=COLS_COSTOS_INSUMOS)
+        df = pd.DataFrame(data[1:], columns=data[0])
+        for col in COLS_COSTOS_INSUMOS:
+            if col not in df.columns:
+                df[col] = ""
+        for col in ["Costo_Presentacion","Costo_Unitario"]:
+            if col in df.columns:
+                df[col] = df[col].apply(limpiar_valor)
+        return df
+    except Exception as e:
+        st.warning(f"Error cargando costos insumos: {e}")
+        return pd.DataFrame(columns=COLS_COSTOS_INSUMOS)
+
+@st.cache_data(ttl=30)
+def cargar_recetas():
+    if sh is None:
+        return pd.DataFrame(columns=COLS_RECETAS)
+    ws, err = safe_worksheet(sh, "Recetas")
+    if err:
+        return pd.DataFrame(columns=COLS_RECETAS)
+    try:
+        data = ws.get_all_values()
+        if len(data) < 2:
+            return pd.DataFrame(columns=COLS_RECETAS)
+        df = pd.DataFrame(data[1:], columns=data[0])
+        for col in COLS_RECETAS:
+            if col not in df.columns:
+                df[col] = ""
+        for col in ["Cantidad","Costo_Ingrediente"]:
+            if col in df.columns:
+                df[col] = df[col].apply(limpiar_valor)
+        return df
+    except Exception as e:
+        st.warning(f"Error cargando recetas: {e}")
+        return pd.DataFrame(columns=COLS_RECETAS)
+
+@st.cache_data(ttl=60)
+def cargar_config_canales():
+    if sh is None:
+        return pd.DataFrame(columns=COLS_CANALES_CONFIG)
+    ws, err = safe_worksheet(sh, "Config_Canales")
+    if err:
+        return pd.DataFrame(columns=COLS_CANALES_CONFIG)
+    try:
+        data = ws.get_all_values()
+        if len(data) < 2:
+            return pd.DataFrame(columns=COLS_CANALES_CONFIG)
+        df = pd.DataFrame(data[1:], columns=data[0])
+        for col in COLS_CANALES_CONFIG:
+            if col not in df.columns:
+                df[col] = ""
+        return df
+    except Exception:
+        return pd.DataFrame(columns=COLS_CANALES_CONFIG)
+
+def cargar_permisos():
+    if sh is None:
+        return {"admin": ["*"], "barista": ["Dashboard","Inventario","Ingresos","Consulta","Impresion","ListaCompra","ReporteStock"]}
+    ws, err = safe_worksheet(sh, "Permisos")
+    if err:
+        return {"admin": ["*"], "barista": ["Dashboard","Inventario","Ingresos","Consulta","Impresion","ListaCompra","ReporteStock"]}
+    try:
+        data = ws.get_all_values()
+        if len(data) < 2:
+            return {"admin": ["*"], "barista": ["Dashboard","Inventario","Ingresos","Consulta","Impresion","ListaCompra","ReporteStock"]}
+        df = pd.DataFrame(data[1:], columns=data[0])
+        permisos = {}
+        for _, row in df.iterrows():
+            rol = str(row.get("Rol","")).strip()
+            pagina = str(row.get("Pagina","")).strip()
+            if rol not in permisos:
+                permisos[rol] = []
+            if pagina:
+                permisos[rol].append(pagina)
+        return permisos
+    except Exception:
+        return {"admin": ["*"], "barista": ["Dashboard","Inventario","Ingresos","Consulta","Impresion","ListaCompra","ReporteStock"]}
+
+PERMISOS = cargar_permisos()
+
+def tiene_permiso(pagina: str) -> bool:
+    if not st.session_state.auth_status:
+        return False
+    rol = st.session_state.user_role
+    if rol == "admin":
+        return True
+    if rol in PERMISOS:
+        if "*" in PERMISOS[rol]:
+            return True
+        return pagina in PERMISOS[rol]
+    return True
+
+# ============================================================
+# CARGA DE DATOS — MERMA
+# ============================================================
+@st.cache_data(ttl=30)
+def cargar_merma():
+    if sh is None:
+        return pd.DataFrame(columns=COLS_MERMA)
+    ws, err = safe_worksheet(sh, "Merma")
+    if err:
+        return pd.DataFrame(columns=COLS_MERMA)
+    try:
+        data = ws.get_all_values()
+        if len(data) < 2:
+            return pd.DataFrame(columns=COLS_MERMA)
+        df = pd.DataFrame(data[1:], columns=data[0])
+        for col in COLS_MERMA:
+            if col not in df.columns:
+                df[col] = ""
+        for col in ["Cantidad","Costo_Unitario","Costo_Total"]:
+            if col in df.columns:
+                df[col] = df[col].apply(limpiar_valor)
+        return df
+    except Exception as e:
+        st.warning(f"Error cargando merma: {e}")
+        return pd.DataFrame(columns=COLS_MERMA)
 
 # ============================================================
 # SISTEMA DE AVISOS
@@ -614,6 +837,152 @@ def _construir_fila_venta(
     ]
 
 # ============================================================
+# LÓGICA DE NEGOCIO — FINANZAS (nuevas hojas)
+# ============================================================
+def _asegurar_hoja_gastos():
+    ws, err = safe_worksheet(sh, "Gastos")
+    if err:
+        try:
+            ws = sh.add_worksheet(title="Gastos", rows="5000", cols=str(len(COLS_GASTOS)))
+            ws.append_row(COLS_GASTOS)
+            return ws, None
+        except Exception as e:
+            return None, f"No se pudo crear hoja Gastos: {e}"
+    return ws, None
+
+def _asegurar_hoja_presupuesto():
+    ws, err = safe_worksheet(sh, "Presupuesto")
+    if err:
+        try:
+            ws = sh.add_worksheet(title="Presupuesto", rows="500", cols=str(len(COLS_PRESUPUESTO)))
+            ws.append_row(COLS_PRESUPUESTO)
+            return ws, None
+        except Exception as e:
+            return None, f"No se pudo crear hoja Presupuesto: {e}"
+    return ws, None
+
+def _asegurar_hoja_costos_insumos():
+    ws, err = safe_worksheet(sh, "CostosInsumos")
+    if err:
+        try:
+            ws = sh.add_worksheet(title="CostosInsumos", rows="2000", cols=str(len(COLS_COSTOS_INSUMOS)))
+            ws.append_row(COLS_COSTOS_INSUMOS)
+            return ws, None
+        except Exception as e:
+            return None, f"No se pudo crear hoja CostosInsumos: {e}"
+    return ws, None
+
+def _asegurar_hoja_recetas():
+    ws, err = safe_worksheet(sh, "Recetas")
+    if err:
+        try:
+            ws = sh.add_worksheet(title="Recetas", rows="2000", cols=str(len(COLS_RECETAS)))
+            ws.append_row(COLS_RECETAS)
+            return ws, None
+        except Exception as e:
+            return None, f"No se pudo crear hoja Recetas: {e}"
+    return ws, None
+
+def _asegurar_hoja_config_canales():
+    ws, err = safe_worksheet(sh, "Config_Canales")
+    if err:
+        try:
+            ws = sh.add_worksheet(title="Config_Canales", rows="50", cols=str(len(COLS_CANALES_CONFIG)))
+            ws.append_row(COLS_CANALES_CONFIG)
+            return ws, None
+        except Exception as e:
+            return None, f"No se pudo crear hoja Config_Canales: {e}"
+    return ws, None
+
+def _asegurar_hoja_canal(nombre_canal: str):
+    ws, err = safe_worksheet(sh, nombre_canal)
+    if err:
+        try:
+            ws = sh.add_worksheet(title=nombre_canal, rows="1000", cols=str(len(COLS_EVENTO_CANAL)))
+            ws.append_row(COLS_EVENTO_CANAL)
+            return ws, None
+        except Exception as e:
+            return None, f"No se pudo crear hoja {nombre_canal}: {e}"
+    return ws, None
+
+def _asegurar_hoja_merma():
+    ws, err = safe_worksheet(sh, "Merma")
+    if err:
+        try:
+            ws = sh.add_worksheet(title="Merma", rows="2000", cols=str(len(COLS_MERMA)))
+            ws.append_row(COLS_MERMA)
+            return ws, None
+        except Exception as e:
+            return None, f"No se pudo crear hoja Merma: {e}"
+    return ws, None
+
+# ============================================================
+# HELPERS FINANCIEROS — GAUGE Y PROYECCIÓN
+# ============================================================
+def _gauge(valor, minimo, maximo, titulo, sufijo="%", umbral_verde=80, umbral_amarillo=60):
+    if not PLOTLY_OK:
+        st.metric(titulo, f"{valor:.1f}{sufijo}")
+        return
+    color = "#48B065" if valor >= umbral_verde else ("#EF9F27" if valor >= umbral_amarillo else "#E24B4A")
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=valor,
+        title={"text": titulo, "font": {"size": 14}},
+        number={"suffix": sufijo, "font": {"size": 24}},
+        gauge={
+            "axis": {"range": [minimo, maximo], "tickwidth": 1},
+            "bar": {"color": color},
+            "steps": [
+                {"range": [minimo, umbral_amarillo], "color": "rgba(226,75,74,0.12)"},
+                {"range": [umbral_amarillo, umbral_verde], "color": "rgba(239,159,39,0.12)"},
+                {"range": [umbral_verde, maximo], "color": "rgba(72,176,101,0.12)"},
+            ],
+            "threshold": {"line": {"color": "white", "width": 2}, "thickness": 0.75, "value": umbral_verde},
+        }
+    ))
+    fig.update_layout(height=230, margin=dict(l=20, r=20, t=50, b=10))
+    st.plotly_chart(fig, use_container_width=True)
+
+def _proyectar_tendencia(df_ventas: pd.DataFrame, meses_futuros: int = 6) -> pd.DataFrame:
+    if df_ventas.empty:
+        return pd.DataFrame()
+    df_v2 = df_ventas.copy()
+    df_v2["Mes_num"] = df_v2["Mes"].apply(limpiar_valor).astype(int)
+    df_v2["Año_num"] = df_v2["Año"].apply(limpiar_valor).astype(int)
+    df_v2 = df_v2[(df_v2["Mes_num"] > 0) & (df_v2["Año_num"] > 0)]
+    df_mensual = (
+        df_v2.groupby(["Año_num","Mes_num"])["Venta_Diaria"]
+        .sum()
+        .reset_index()
+        .sort_values(["Año_num","Mes_num"])
+        .reset_index(drop=True)
+    )
+    df_mensual["idx"] = range(len(df_mensual))
+    df_mensual["tipo"] = "real"
+    if len(df_mensual) < 2:
+        return df_mensual
+    x = df_mensual["idx"].values.astype(float)
+    y = df_mensual["Venta_Diaria"].values.astype(float)
+    coef = np.polyfit(x, y, 1)
+    poly = np.poly1d(coef)
+    last_idx  = int(df_mensual["idx"].max())
+    last_año  = int(df_mensual["Año_num"].iloc[-1])
+    last_mes  = int(df_mensual["Mes_num"].iloc[-1])
+    proyecciones = []
+    for i in range(1, meses_futuros + 1):
+        mes_abs = last_mes - 1 + i
+        fut_mes = (mes_abs % 12) + 1
+        fut_año = last_año + (mes_abs // 12)
+        proyecciones.append({
+            "Año_num": fut_año, "Mes_num": fut_mes,
+            "idx": last_idx + i,
+            "Venta_Diaria": max(0.0, float(poly(last_idx + i))),
+            "tipo": "proyección"
+        })
+    df_proyecciones = pd.DataFrame(proyecciones)
+    return pd.concat([df_mensual, df_proyecciones], ignore_index=True)
+
+# ============================================================
 # ESTADO DE SESIÓN
 # ============================================================
 _defaults = {
@@ -621,6 +990,8 @@ _defaults = {
     "current_user": None,
     "user_role": None,
     "pagina": "Dashboard",
+    "ingredientes_receta": [],
+    "show_add_ing": False,
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -666,9 +1037,9 @@ with st.sidebar:
 
     st.divider()
     st.write("**📦 Movimientos de Stock:**")
-    if st.button("📝 1. Capturar inventario",  use_container_width=True): cambiar_pagina("Inventario")
-    if st.button("📥 2. Entrada de compras",   use_container_width=True): cambiar_pagina("Ingresos")
-    if st.button("📦 3. Inventario actual",    use_container_width=True): cambiar_pagina("Consulta")
+    if st.button("📝 Capturar inventario",  use_container_width=True): cambiar_pagina("Inventario")
+    if st.button("📥 Entrada de compras",   use_container_width=True): cambiar_pagina("Ingresos")
+    if st.button("📦 Inventario actual",    use_container_width=True): cambiar_pagina("Consulta")
 
     st.divider()
     st.write("**💰 Ventas:**")
@@ -677,10 +1048,19 @@ with st.sidebar:
     if st.button("📥 Importar Histórico",      use_container_width=True): cambiar_pagina("ImportarVentas")
 
     st.divider()
+    st.write("**💸 Finanzas:**")
+    if st.button("💰 Registrar Gasto",      use_container_width=True): cambiar_pagina("RegistrarGasto")
+    if st.button("📋 Presupuesto Anual",    use_container_width=True): cambiar_pagina("Presupuesto")
+    if st.button("🧾 Base de Costos",       use_container_width=True): cambiar_pagina("BaseCostos")
+    if st.button("📉 Registrar Merma",      use_container_width=True): cambiar_pagina("RegistrarMerma")
+    if st.button("📊 Dashboard Financiero", use_container_width=True): cambiar_pagina("DashboardFinanciero")
+    if st.button("🛒 Canales de Venta",     use_container_width=True): cambiar_pagina("CanalesVenta")
+
+    st.divider()
     st.write("**🖨️ Tickets (58mm):**")
-    if st.button("📋 1. Lista de Conteo",      use_container_width=True): cambiar_pagina("Impresion")
-    if st.button("🛒 2. Lista de Compra",      use_container_width=True): cambiar_pagina("ListaCompra")
-    if st.button("📦 3. Reporte de Stock",     use_container_width=True): cambiar_pagina("ReporteStock")
+    if st.button("📋 Lista de Conteo",      use_container_width=True): cambiar_pagina("Impresion")
+    if st.button("🛒 Lista de Compra",      use_container_width=True): cambiar_pagina("ListaCompra")
+    if st.button("📦 Reporte de Stock",     use_container_width=True): cambiar_pagina("ReporteStock")
 
     st.divider()
     with st.expander("ℹ️ Guía de Clasificación (Grupos)"):
@@ -715,9 +1095,8 @@ Ejemplos: desengrasante, cloro, gel antibacterial, franelas, esponjas, cepillos 
 Productos para venta directa o preparación de alimentos. Revisión de fecha de caducidad en cada conteo.
 Ejemplos: pan para sándwich, pan dulce, muffins, galletas empacadas, snacks, fruta para decoración.
 
-**Grupo G — Retail, Utensilios y Otros**
-Todo lo que se vende como producto terminado o se usa como equipo de apoyo. Conteo menos frecuente pero registrar cualquier salida.
-Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, termómetros de barra, cucharas medidoras.
+**Grupo G — Compras pendientes**
+Todo lo que hace falta comprar para mejorar la operación de Noble.
         """)
 
     with st.expander("📊 Tabla Resumen de Grupos"):
@@ -728,11 +1107,11 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
             {"Grupo":"D","Nombre":"Empaques y Desechables","Rutina":"Cada 2 días","Riesgo":"Medio","Almacén":"Bodega empaques","Nota":"Contar en piezas/rollos"},
             {"Grupo":"E","Nombre":"Suministros de Limpieza","Rutina":"Cada 2 días","Riesgo":"Bajo","Almacén":"Bodega limpieza","Nota":"Separar de alimentos"},
             {"Grupo":"F","Nombre":"Comida y Vitrina","Rutina":"Cada 2 días","Riesgo":"Alto","Almacén":"Vitrina / Refrigerador","Nota":"Verificar caducidad"},
-            {"Grupo":"G","Nombre":"Retail, Utensilios y Otros","Rutina":"Cada 2 días","Riesgo":"Bajo","Almacén":"Bodega general / Mostrador","Nota":"Registrar cada salida"},
+            {"Grupo":"G","Nombre":"Compras","Rutina":"Cada 2 días","Riesgo":"Bajo","Almacén":"Bodega general / Mostrador","Nota":"Registrar cada entrada"},
         ]
         st.dataframe(pd.DataFrame(grupos_info), hide_index=True, use_container_width=True)
 
-    # ZONA ADMIN
+# ZONA ADMIN
     if st.session_state.user_role == "admin":
         st.divider()
         st.write("**🛠️ Administración Avanzada:**")
@@ -849,11 +1228,51 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                                 except Exception as e:
                                     st.error(f"Error: {e}")
 
+        # Gestión de Permisos de Páginas
+        st.divider()
+        with st.expander("🔐 Permisos de Módulos"):
+            st.write("Asigna qué páginas puede ver cada rol.")
+            all_pages = ["Dashboard","Inventario","Ingresos","Consulta","Ventas","DashboardVentas","ImportarVentas",
+                         "RegistrarGasto","Presupuesto","BaseCostos","RegistrarMerma","DashboardFinanciero",
+                         "CanalesVenta","Impresion","ListaCompra","ReporteStock","CorteMes"]
+            ws_perm, err_perm = safe_worksheet(sh, "Permisos")
+            if err_perm:
+                try:
+                    ws_perm = sh.add_worksheet(title="Permisos", rows="100", cols="2")
+                    ws_perm.append_row(COLS_PERMISOS)
+                except Exception as e:
+                    st.error(f"No se pudo crear hoja Permisos: {e}")
+            with st.form("f_perm"):
+                rol_perm = st.selectbox("Rol:", ["barista"])
+                paginas_activas = [p for p in all_pages if p in PERMISOS.get(rol_perm, [])]
+                paginas_sel = st.multiselect("Páginas permitidas:", all_pages, default=paginas_activas)
+                if st.form_submit_button("💾 Guardar Permisos"):
+                    if ws_perm:
+                        try:
+                            data = ws_perm.get_all_values()
+                            if len(data) > 1:
+                                df_old = pd.DataFrame(data[1:], columns=data[0])
+                                df_old = df_old[df_old["Rol"] != rol_perm]
+                                ws_perm.clear()
+                                ws_perm.append_row(COLS_PERMISOS)
+                                if not df_old.empty:
+                                    ws_perm.append_rows(df_old.values.tolist())
+                            else:
+                                ws_perm.clear()
+                                ws_perm.append_row(COLS_PERMISOS)
+                            new_rows = [[rol_perm, p] for p in paginas_sel]
+                            if new_rows:
+                                ws_perm.append_rows(new_rows, value_input_option="USER_ENTERED")
+                            st.cache_data.clear()
+                            PERMISOS = cargar_permisos()
+                            st.success("Permisos actualizados.")
+                            time.sleep(1)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
     # CATÁLOGO
     if st.session_state.auth_status:
-        # ← NUEVO: cargar df_raw_sb usando el df_ins completo (no filtrado) para que el admin
-        #           pueda editar/activar insumos desactivados también.
-        #           Se hace una carga directa del sheet sin filtro de Activo para la gestión del catálogo.
         df_raw_sb_full = pd.DataFrame()
         if sh is not None:
             try:
@@ -869,8 +1288,7 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                         )
             except Exception:
                 pass
-        df_raw_sb = df_raw_sb_full  # el sidebar de catálogo ve todos los insumos (activos e inactivos)
-        # ← FIN NUEVO
+        df_raw_sb = df_raw_sb_full
 
         st.divider()
         st.subheader("🛠️ Gestión del Catálogo")
@@ -887,7 +1305,6 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                 um = st.selectbox("Unidad de Medida", UNIDADES_MED)
                 sm = st.number_input("Stock Mínimo", min_value=0.0)
                 tara_new = st.number_input("Tara (kg/gr)", min_value=0.0, value=0.0)
-                # ← NUEVO: todo insumo creado desde el formulario nace como Activo = TRUE
                 if st.form_submit_button("✨ Crear Insumo"):
                     if not n.strip():
                         st.error("El nombre del insumo es obligatorio.")
@@ -898,7 +1315,7 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                         else:
                             try:
                                 ws_ins.append_row(
-                                    [u, n.strip(), m, p, g, "", uc, um, "", "", "", sm, "", "", "", "", tara_new, "TRUE"],  # ← NUEVO: "TRUE" en columna R
+                                    [u, n.strip(), m, p, g, "", uc, um, "", "", "", sm, "", "", "", "", tara_new, "TRUE"],
                                     value_input_option="USER_ENTERED"
                                 )
                                 st.cache_data.clear()
@@ -908,7 +1325,7 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                             except Exception as e:
                                 st.error(f"Error al crear insumo: {e}")
 
-        else:  # Editar Insumo
+        else:
             if df_raw_sb.empty or "Nombre del Insumo" not in df_raw_sb.columns:
                 st.info("Sin insumos disponibles para editar.")
             else:
@@ -916,7 +1333,6 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                 if not ins_nombres:
                     st.info("El catálogo está vacío.")
                 else:
-                    # ← NUEVO: mostrar indicador visual de estado (activo/inactivo) en el selector
                     def _label_insumo(nombre):
                         mask = df_raw_sb["Nombre del Insumo"] == nombre
                         if not mask.any():
@@ -929,7 +1345,6 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                         sorted(ins_nombres),
                         format_func=_label_insumo
                     )
-                    # ← FIN NUEVO
                     mask = df_raw_sb["Nombre del Insumo"] == ins_edit
                     if not mask.any():
                         st.warning("Insumo no encontrado.")
@@ -948,14 +1363,12 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                             e_um = st.selectbox("Medida", UNIDADES_MED, index=UNIDADES_MED.index(u_val) if u_val in UNIDADES_MED else 0)
                             e_sm = st.number_input("Stock Mínimo", min_value=0.0, value=limpiar_valor(d.get("Stock Mínimo",0)))
                             e_tara = st.number_input("Tara (kg/gr)", min_value=0.0, value=limpiar_valor(d.get("Tara",0)))
-                            # ← NUEVO: toggle Activo/Inactivo en el formulario de edición
                             activo_actual = str(d.get("Activo", "TRUE")).strip().upper() == "TRUE"
                             e_activo = st.toggle(
                                 "Insumo Activo",
                                 value=activo_actual,
                                 help="Desactiva para ocultarlo de Captura e Inventario sin borrar su historial."
                             )
-                            # ← FIN NUEVO
                             if st.form_submit_button("💾 Actualizar Insumo"):
                                 if not e_n.strip():
                                     st.error("El nombre no puede quedar vacío.")
@@ -969,8 +1382,8 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
                                             if idx < 2:
                                                 raise ValueError("Número de fila inválido.")
                                             ws_ins.update(
-                                                range_name=f"A{idx}:R{idx}",  # ← NUEVO: extendido de Q a R para incluir Activo
-                                                values=[[e_u, e_n.strip(), e_m, e_p, e_g, "", e_uc, e_um, "", "", "", e_sm, "", "", "", "", e_tara, "TRUE" if e_activo else "FALSE"]]  # ← NUEVO: columna R
+                                                range_name=f"A{idx}:R{idx}",
+                                                values=[[e_u, e_n.strip(), e_m, e_p, e_g, "", e_uc, e_um, "", "", "", e_sm, "", "", "", "", e_tara, "TRUE" if e_activo else "FALSE"]]
                                             )
                                             st.cache_data.clear()
                                             st.success("Catálogo actualizado.")
@@ -984,8 +1397,23 @@ Ejemplos: café empacado para venta, merch Noble, filtros de papel, tampers, ter
 # ============================================================
 pagina = st.session_state.pagina
 
+# ── PANTALLA DE BIENVENIDA SI NO HA INICIADO SESIÓN ──────────
+if not st.session_state.auth_status:
+    st.markdown("""
+    <div style='text-align: center; padding: 4rem 1rem;'>
+        <h1 style='font-size: 2.8rem;'>☕ Noble · Sistema de Gestión</h1>
+        <p style='font-size: 1.3rem; color: #666;'>Inventario, Ventas, Finanzas y más</p>
+        <hr style='width: 50%; margin: 2rem auto; opacity: 0.3;'>
+        <p style='font-size: 1.1rem;'>🔒 Usa el <b>panel lateral</b> para iniciar sesión con tu clave.<br>Si no tienes una, solicítala a tu administrador.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    st.stop()
+
 # ── DASHBOARD ────────────────────────────────────────────────
 if pagina == "Dashboard":
+    if not tiene_permiso("Dashboard"):
+        st.error("No tienes permiso para esta página.")
+        st.stop()
     df_raw, df_historial = cargar_datos_integrales()
     st.title("📊 Dashboard Operativo")
 
@@ -994,64 +1422,44 @@ if pagina == "Dashboard":
     if dias_faltantes <= 4:
         st.info(f"⏳ A {dias_faltantes} días del fin de mes. Recuerda ejecutar el **Corte de Mes**.")
 
+    # Venta acumulada del mes actual
+    st.subheader("💰 Venta acumulada del mes")
+    df_v_dash = cargar_ventas()
+    if not df_v_dash.empty:
+        df_v_mes_dash = df_v_dash[
+            (df_v_dash["Mes"].apply(limpiar_valor) == ahora.month) &
+            (df_v_dash["Año"].apply(limpiar_valor) == ahora.year)
+        ]
+        venta_acum_dash = df_v_mes_dash["Venta_Diaria"].sum() if not df_v_mes_dash.empty else 0.0
+        meta_mes_dash = 145000.0
+        if not df_v_mes_dash.empty and "Meta_Mensual" in df_v_mes_dash.columns:
+            meta_mes_dash = limpiar_valor(df_v_mes_dash["Meta_Mensual"].iloc[-1]) or meta_mes_dash
+        avance_dash = (venta_acum_dash / meta_mes_dash * 100) if meta_mes_dash > 0 else 0.0
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Venta acumulada", f"${venta_acum_dash:,.2f}")
+        c2.metric("Meta mensual", f"${meta_mes_dash:,.2f}")
+        c3.metric("Avance", f"{avance_dash:.1f}%")
+    else:
+        st.info("Aún no hay ventas registradas este mes.")
+
     df_actual = obtener_ultimo_inventario(df_historial)
 
     if not df_actual.empty:
-        crit = df_actual[df_actual["Necesita Compra"] == True]
-        c1, c2, c3 = st.columns(3)
-        c1.metric("🛒 Pendientes Noble",          len(crit[crit["Unidad de Negocio"] == "Noble"]))
-        c2.metric("🛒 Pendientes Coffee Station",  len(crit[crit["Unidad de Negocio"] == "Coffee Station"]))
-        c3.metric("🕒 Último Movimiento",          fecha_max_segura(df_actual["Fecha de Inventario"]))
-
+        # ── TABLA UNIFICADA DE COMPRAS ──
         st.divider()
+        st.subheader("🛒 Lista de compras (todas las unidades)")
+        com_global = df_actual[df_actual["Necesita Compra"] == True].copy()
+        if not com_global.empty:
+            cols_compra = ["Unidad de Negocio","Nombre del Insumo","Marca","Proveedor","Grupo",
+                           "Presentación de Compra","Unidad de Medida","Stock Neto Calculado",
+                           "Stock Mínimo","Necesita Compra","Responsable","Fecha de Inventario","Observaciones"]
+            cols_compra_ok = [c for c in cols_compra if c in com_global.columns]
+            st.dataframe(com_global[cols_compra_ok].sort_values(["Unidad de Negocio","Grupo"]),
+                         use_container_width=True, hide_index=True)
+        else:
+            st.success("✅ No hay insumos que necesiten compra.")
 
-        def tabla_pendientes(df_pen: pd.DataFrame, titulo: str):
-            if df_pen.empty:
-                st.success(f"✅ {titulo} — Operación cubierta.")
-                return
-            st.markdown(f"#### {titulo} — {len(df_pen)} pendiente(s)")
-            df_pen = df_pen.copy()
-            df_pen["_brecha"] = df_pen["Stock Neto Calculado"] - df_pen["Stock Mínimo"]
-            df_pen = df_pen.sort_values(["Grupo","_brecha"], ascending=[True, True])
-            h = st.columns([0.5, 2.5, 1.0, 1.0, 1.0, 1.8])
-            for col, label in zip(h, ["Grp","Insumo","Stock","Mín","Brecha","Último conteo"]):
-                col.markdown(f"<small><b>{label}</b></small>", unsafe_allow_html=True)
-            grupo_anterior = None
-            for _, r in df_pen.iterrows():
-                grupo  = str(r.get("Grupo","—"))
-                stock  = r["Stock Neto Calculado"]
-                minimo = r["Stock Mínimo"]
-                brecha = stock - minimo
-                fecha_str = fmt_fecha_hmo(r.get("Fecha de Inventario"))
-                if grupo != grupo_anterior:
-                    st.markdown(
-                        f"<div style='margin:6px 0 2px;font-size:11px;color:var(--color-text-tertiary);letter-spacing:.08em'>GRUPO {grupo}</div>",
-                        unsafe_allow_html=True
-                    )
-                    grupo_anterior = grupo
-                color_dot = "#E24B4A" if brecha < 0 else ("#EF9F27" if brecha < minimo * 0.3 else "#639922")
-                color_txt = "#E24B4A" if brecha < 0 else ("#BA7517" if brecha < minimo * 0.3 else "#3B6D11")
-                pct = min(100, int((stock / minimo * 100) if minimo > 0 else 100))
-                barra_html = (
-                    f"<div style='background:var(--color-border-tertiary);border-radius:4px;height:6px;width:100%;margin-top:4px'>"
-                    f"<div style='width:{pct}%;height:6px;border-radius:4px;background:{color_dot}'></div></div>"
-                )
-                c = st.columns([0.5, 2.5, 1.0, 1.0, 1.0, 1.8])
-                c[0].markdown(f"<span style='font-size:16px;line-height:2;color:{color_dot}'>●</span>", unsafe_allow_html=True)
-                c[1].markdown(f"<span style='font-size:13px;font-weight:500'>{r['Nombre del Insumo']}</span>", unsafe_allow_html=True)
-                c[2].markdown(f"<span style='color:{color_txt};font-weight:500'>{stock:.1f}</span>", unsafe_allow_html=True)
-                c[3].markdown(f"<span style='font-size:13px'>{minimo:.1f}</span>", unsafe_allow_html=True)
-                c[4].markdown(f"<span style='color:{color_txt};font-weight:500'>{brecha:+.1f}</span>{barra_html}", unsafe_allow_html=True)
-                c[5].markdown(f"<span style='font-size:11px;color:var(--color-text-secondary)'>{fecha_str}</span>", unsafe_allow_html=True)
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("🏢 Noble")
-            tabla_pendientes(crit[crit["Unidad de Negocio"] == "Noble"], "Noble")
-        with col2:
-            st.subheader("☕ Coffee Station")
-            tabla_pendientes(crit[crit["Unidad de Negocio"] == "Coffee Station"], "Coffee Station")
-
+        # ── ACTIVIDAD RECIENTE ──
         st.divider()
         st.subheader("🕒 Actividad Reciente")
         df_log = df_historial.copy()
@@ -1069,6 +1477,9 @@ if pagina == "Dashboard":
 
 # ── INVENTARIO ───────────────────────────────────────────────
 elif pagina == "Inventario":
+    if not tiene_permiso("Inventario"):
+        st.error("No tienes permiso para esta página.")
+        st.stop()
     df_raw, df_historial = cargar_datos_integrales()
     st.title("📝 Capturar inventario")
     mostrar_avisos()
@@ -1084,7 +1495,6 @@ elif pagina == "Inventario":
     with col_r:
         r_sel = st.selectbox("👤 Responsable", responsables, index=resp_idx,
                              disabled=(st.session_state.user_role != "admin"))
-    # ← NUEVO: df_raw ya viene filtrado (solo activos), no se requiere cambio aquí
     df_u = df_raw[df_raw["Unidad de Negocio"] == u_sel] if not df_raw.empty else pd.DataFrame()
     with col_g:
         grps  = sorted(df_u["Grupo"].dropna().unique().tolist()) if not df_u.empty and "Grupo" in df_u.columns else GRUPOS
@@ -1103,102 +1513,193 @@ elif pagina == "Inventario":
     if df_f.empty:
         st.info("Selecciona al menos un grupo para mostrar insumos.")
     else:
-        with st.form("form_inventario", clear_on_submit=False):
-            h1,h2,h3,h4,h5,h6,h7,h8 = st.columns([2.8,1.0,1.0,1.0,1.0,1.0,1.2,2.5])
-            for col, label in zip([h1,h2,h3,h4,h5,h6,h7,h8],
-                                  ["Insumo / Ref","Almacén","Barra (bruto)","Medida","Tara (gr)","Neto*","¿Pedir?","Observaciones"]):
-                col.write(f"**{label}**")
-            st.markdown("*Neto = Alm + (Barra − Tara). La Tara se descuenta solo de Barra.")
-            st.divider()
-
-            regs_form = {}
+        modo_bulk_inv = st.toggle("🚀 Activar Captura Masiva (Bulk)")
+        if modo_bulk_inv:
+            # Modo Bulk
+            st.subheader("Captura Masiva de Inventario")
+            bulk_data = []
             for idx_row, row in df_f.iterrows():
-                nom      = str(row.get("Nombre del Insumo",""))
-                safe_nom = re.sub(r'[^a-zA-Z0-9]','_', nom)[:35] + f"_{idx_row}"
-                prev        = buscar_insumo_en_actual(df_actual, nom)
-                v_prev      = prev["Stock Neto Calculado"] if prev is not None else 0.0
-                v_alm_prev  = limpiar_valor(prev["Alm"])   if prev is not None else 0.0
-                v_bar_prev  = limpiar_valor(prev["Barra"]) if prev is not None else 0.0
-                v_min       = limpiar_valor(row.get("Stock Mínimo",0))
+                nom = str(row.get("Nombre del Insumo",""))
+                prev = buscar_insumo_en_actual(df_actual, nom)
+                v_alm_prev = limpiar_valor(prev["Alm"]) if prev is not None else 0.0
+                v_bar_prev = limpiar_valor(prev["Barra"]) if prev is not None else 0.0
+                v_min = limpiar_valor(row.get("Stock Mínimo",0))
                 v_tara_hist = limpiar_valor(prev.get("Tara",0)) if prev is not None else 0.0
-                v_tara_cat  = limpiar_valor(row.get("Tara",0))
+                v_tara_cat = limpiar_valor(row.get("Tara",0))
                 v_tara_init = v_tara_hist if v_tara_hist > 0 else v_tara_cat
-
-                c1,c2,c3,c4,c5,c6,c7,c8 = st.columns([2.8,1.0,1.0,1.0,1.0,1.0,1.2,2.5])
-                with c1:
-                    st.write(f"**{nom}**")
-                    st.caption(f"Marca: {row.get('Marca','-')} | Prov: {row.get('Proveedor','-')}")
-                    diff  = v_prev - v_min
-                    color = "green" if diff >= 0 else "red"
-                    tara_txt = f" | Tara: {v_tara_init}" if v_tara_init > 0 else ""
-                    st.markdown(
-                        f"<small>Anterior: {v_prev} | Mín: {v_min} (<span style='color:{color}'>{diff:+.1f}</span>){tara_txt}</small>",
-                        unsafe_allow_html=True
-                    )
-                with c2:
-                    alm_key = f"a_{safe_nom}"
-                    if alm_key not in st.session_state: st.session_state[alm_key] = v_alm_prev
-                    v_a = st.number_input("Alm", min_value=0.0, step=1.0, key=alm_key, label_visibility="collapsed")
-                with c3:
-                    bar_key = f"b_{safe_nom}"
-                    if bar_key not in st.session_state: st.session_state[bar_key] = v_bar_prev
-                    v_b = st.number_input("Bar", min_value=0.0, step=1.0, key=bar_key, label_visibility="collapsed")
-                with c4:
-                    u_act = str(row.get("Unidad de Medida","pz")).lower()
-                    v_u = st.selectbox("U", UNIDADES_MED,
-                                       index=UNIDADES_MED.index(u_act) if u_act in UNIDADES_MED else 0,
-                                       key=f"u_{safe_nom}", label_visibility="collapsed")
-                with c5:
-                    tara_key = f"tara_{safe_nom}"
-                    if tara_key not in st.session_state: st.session_state[tara_key] = v_tara_init
-                    v_tara_manual = st.number_input("Tara", min_value=0.0, step=0.1,
-                                                    key=tara_key, label_visibility="collapsed")
-                with c6:
-                    v_b_neto    = max(0.0, v_b - v_tara_manual)
-                    v_n_display = v_a + v_b_neto
-                    st.write(f"**{v_n_display:.1f}**")
-                with c7:
-                    v_comprar_prev = bool(prev.get("Necesita Compra",False)) if prev is not None else False
-                    ck_key = f"p_{safe_nom}"
-                    if ck_key not in st.session_state: st.session_state[ck_key] = v_comprar_prev
-                    v_p = st.checkbox("🛒", key=ck_key)
-                with c8:
-                    v_c = st.text_input("Obs", key=f"c_{safe_nom}", label_visibility="collapsed", placeholder="Opcional")
-
-                regs_form[nom] = {"a":v_a,"b":v_b_neto,"n":v_n_display,"u":v_u,"p":v_p,"c":v_c,"tara":v_tara_manual,"row":row}
+                v_ud_med = str(row.get("Unidad de Medida","pz")).lower()
+                v_comp_prev = bool(prev.get("Necesita Compra",False)) if prev is not None else False
+                bulk_data.append({
+                    "Insumo": nom,
+                    "Almacén": v_alm_prev,
+                    "Barra": v_bar_prev,
+                    "Tara": v_tara_init,
+                    "Unidad Medida": v_ud_med,
+                    "Neto": v_alm_prev + max(0.0, v_bar_prev - v_tara_init),
+                    "¿Pedir?": v_comp_prev,
+                    "Observaciones": "",
+                    "row": row,
+                    "prev": prev,
+                    "stock_min": v_min,
+                })
+            df_bulk = pd.DataFrame(bulk_data)
+            edited_df = st.data_editor(
+                df_bulk[["Insumo","Almacén","Barra","Tara","Unidad Medida","Neto","¿Pedir?","Observaciones"]],
+                column_config={
+                    "Insumo": st.column_config.TextColumn(disabled=True),
+                    "Almacén": st.column_config.NumberColumn(min_value=0.0, step=1.0),
+                    "Barra": st.column_config.NumberColumn(min_value=0.0, step=1.0),
+                    "Tara": st.column_config.NumberColumn(min_value=0.0, step=0.1),
+                    "Unidad Medida": st.column_config.SelectboxColumn(options=UNIDADES_MED),
+                    "Neto": st.column_config.NumberColumn(min_value=0.0, step=0.1),
+                    "¿Pedir?": st.column_config.CheckboxColumn(),
+                    "Observaciones": st.column_config.TextColumn()
+                },
+                hide_index=True,
+                use_container_width=True,
+                disabled=["Insumo"]
+            )
+            st.caption("Edita los valores directamente. El Neto es calculado como Alm + (Barra - Tara) por defecto, pero puedes sobrescribirlo.")
+            if st.button("📥 PROCESAR INVENTARIO BULK", type="primary", use_container_width=True):
+                ws_his, err = safe_worksheet(sh, "Historial")
+                if err:
+                    st.error(err)
+                else:
+                    fh = ts_hermosillo()
+                    filas = []
+                    for _, r_ed in edited_df.iterrows():
+                        nom = r_ed["Insumo"]
+                        orig = next((x for x in bulk_data if x["Insumo"] == nom), None)
+                        if orig is None: continue
+                        alm = limpiar_valor(r_ed["Almacén"])
+                        barra = limpiar_valor(r_ed["Barra"])
+                        tara = limpiar_valor(r_ed["Tara"])
+                        neto_input = limpiar_valor(r_ed["Neto"])
+                        if neto_input == 0.0 and (alm > 0 or barra > 0 or tara > 0):
+                            neto = alm + max(0.0, barra - tara)
+                        else:
+                            neto = neto_input
+                        comprar = bool(r_ed["¿Pedir?"])
+                        obs = str(r_ed.get("Observaciones",""))
+                        dm = orig["row"]
+                        filas.append(construir_fila_historial(
+                            unidad=u_sel, nombre=nom, marca=dm.get("Marca",""),
+                            proveedor=dm.get("Proveedor",""), grupo=dm.get("Grupo",""),
+                            fecha_entrada="", presentacion=dm.get("Presentación de Compra",""),
+                            unidad_medida=r_ed["Unidad Medida"], alm=alm, barra=barra,
+                            stock_neto=neto, stock_minimo=orig["stock_min"],
+                            comprar=comprar, responsable=r_sel, fecha_inventario=fh,
+                            tara=tara, observaciones=obs,
+                        ))
+                    ok, msg = append_rows_con_retry(ws_his, filas)
+                    if ok:
+                        st.cache_data.clear()
+                        st.success(f"Inventario masivo registrado: {len(filas)} insumos. {msg}")
+                        time.sleep(0.5)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+        else:
+            # Modo regular existente
+            with st.form("form_inventario", clear_on_submit=False):
+                h1,h2,h3,h4,h5,h6,h7,h8 = st.columns([2.8,1.0,1.0,1.0,1.0,1.0,1.2,2.5])
+                for col, label in zip([h1,h2,h3,h4,h5,h6,h7,h8],
+                                      ["Insumo / Ref","Almacén","Barra (bruto)","Medida","Tara (gr)","Neto*","¿Pedir?","Observaciones"]):
+                    col.write(f"**{label}**")
+                st.markdown("*Neto = Alm + (Barra − Tara). La Tara se descuenta solo de Barra.")
                 st.divider()
 
-            btn_inv = st.form_submit_button("📥 PROCESAR INVENTARIO", use_container_width=True, type="primary")
+                regs_form = {}
+                for idx_row, row in df_f.iterrows():
+                    nom      = str(row.get("Nombre del Insumo",""))
+                    safe_nom = re.sub(r'[^a-zA-Z0-9]','_', nom)[:35] + f"_{idx_row}"
+                    prev        = buscar_insumo_en_actual(df_actual, nom)
+                    v_prev      = prev["Stock Neto Calculado"] if prev is not None else 0.0
+                    v_alm_prev  = limpiar_valor(prev["Alm"])   if prev is not None else 0.0
+                    v_bar_prev  = limpiar_valor(prev["Barra"]) if prev is not None else 0.0
+                    v_min       = limpiar_valor(row.get("Stock Mínimo",0))
+                    v_tara_hist = limpiar_valor(prev.get("Tara",0)) if prev is not None else 0.0
+                    v_tara_cat  = limpiar_valor(row.get("Tara",0))
+                    v_tara_init = v_tara_hist if v_tara_hist > 0 else v_tara_cat
 
-        if btn_inv:
-            ws_his, err = safe_worksheet(sh, "Historial")
-            if err:
-                st.error(err)
-            else:
-                fh    = ts_hermosillo()
-                filas = []
-                for n, info in regs_form.items():
-                    dm = info["row"]
-                    filas.append(construir_fila_historial(
-                        unidad=u_sel, nombre=n, marca=dm.get("Marca",""),
-                        proveedor=dm.get("Proveedor",""), grupo=dm.get("Grupo",""),
-                        fecha_entrada="", presentacion=dm.get("Presentación de Compra",""),
-                        unidad_medida=info["u"], alm=info["a"], barra=info["b"],
-                        stock_neto=info["n"], stock_minimo=dm.get("Stock Mínimo",0),
-                        comprar=info["p"], responsable=r_sel, fecha_inventario=fh,
-                        tara=info["tara"], observaciones=info["c"],
-                    ))
-                ok, msg = append_rows_con_retry(ws_his, filas)
-                if ok:
-                    st.cache_data.clear()
-                    st.success(f"¡Inventario registrado! {msg}")
-                    time.sleep(0.5)
-                    st.rerun()
+                    c1,c2,c3,c4,c5,c6,c7,c8 = st.columns([2.8,1.0,1.0,1.0,1.0,1.0,1.2,2.5])
+                    with c1:
+                        st.write(f"**{nom}**")
+                        st.caption(f"Marca: {row.get('Marca','-')} | Prov: {row.get('Proveedor','-')}")
+                        diff  = v_prev - v_min
+                        color = "green" if diff >= 0 else "red"
+                        tara_txt = f" | Tara: {v_tara_init}" if v_tara_init > 0 else ""
+                        st.markdown(
+                            f"<small>Anterior: {v_prev} | Mín: {v_min} (<span style='color:{color}'>{diff:+.1f}</span>){tara_txt}</small>",
+                            unsafe_allow_html=True
+                        )
+                    with c2:
+                        alm_key = f"a_{safe_nom}"
+                        if alm_key not in st.session_state: st.session_state[alm_key] = v_alm_prev
+                        v_a = st.number_input("Alm", min_value=0.0, step=1.0, key=alm_key, label_visibility="collapsed")
+                    with c3:
+                        bar_key = f"b_{safe_nom}"
+                        if bar_key not in st.session_state: st.session_state[bar_key] = v_bar_prev
+                        v_b = st.number_input("Bar", min_value=0.0, step=1.0, key=bar_key, label_visibility="collapsed")
+                    with c4:
+                        u_act = str(row.get("Unidad de Medida","pz")).lower()
+                        v_u = st.selectbox("U", UNIDADES_MED,
+                                           index=UNIDADES_MED.index(u_act) if u_act in UNIDADES_MED else 0,
+                                           key=f"u_{safe_nom}", label_visibility="collapsed")
+                    with c5:
+                        tara_key = f"tara_{safe_nom}"
+                        if tara_key not in st.session_state: st.session_state[tara_key] = v_tara_init
+                        v_tara_manual = st.number_input("Tara", min_value=0.0, step=0.1,
+                                                        key=tara_key, label_visibility="collapsed")
+                    with c6:
+                        v_b_neto    = max(0.0, v_b - v_tara_manual)
+                        v_n_display = v_a + v_b_neto
+                        st.write(f"**{v_n_display:.1f}**")
+                    with c7:
+                        v_comprar_prev = bool(prev.get("Necesita Compra",False)) if prev is not None else False
+                        ck_key = f"p_{safe_nom}"
+                        if ck_key not in st.session_state: st.session_state[ck_key] = v_comprar_prev
+                        v_p = st.checkbox("🛒", key=ck_key)
+                    with c8:
+                        v_c = st.text_input("Obs", key=f"c_{safe_nom}", label_visibility="collapsed", placeholder="Opcional")
+
+                    regs_form[nom] = {"a":v_a,"b":v_b_neto,"n":v_n_display,"u":v_u,"p":v_p,"c":v_c,"tara":v_tara_manual,"row":row}
+                    st.divider()
+
+                btn_inv = st.form_submit_button("📥 PROCESAR INVENTARIO", use_container_width=True, type="primary")
+
+            if btn_inv:
+                ws_his, err = safe_worksheet(sh, "Historial")
+                if err:
+                    st.error(err)
                 else:
-                    st.error(msg)
+                    fh    = ts_hermosillo()
+                    filas = []
+                    for n, info in regs_form.items():
+                        dm = info["row"]
+                        filas.append(construir_fila_historial(
+                            unidad=u_sel, nombre=n, marca=dm.get("Marca",""),
+                            proveedor=dm.get("Proveedor",""), grupo=dm.get("Grupo",""),
+                            fecha_entrada="", presentacion=dm.get("Presentación de Compra",""),
+                            unidad_medida=info["u"], alm=info["a"], barra=info["b"],
+                            stock_neto=info["n"], stock_minimo=dm.get("Stock Mínimo",0),
+                            comprar=info["p"], responsable=r_sel, fecha_inventario=fh,
+                            tara=info["tara"], observaciones=info["c"],
+                        ))
+                    ok, msg = append_rows_con_retry(ws_his, filas)
+                    if ok:
+                        st.cache_data.clear()
+                        st.success(f"¡Inventario registrado! {msg}")
+                        time.sleep(0.5)
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
 # ── INGRESOS ─────────────────────────────────────────────────
 elif pagina == "Ingresos":
+    if not tiene_permiso("Ingresos"):
+        st.error("No tienes permiso para esta página.")
+        st.stop()
     df_raw, df_historial = cargar_datos_integrales()
     st.title("📥 Entrada de compras")
     mostrar_avisos()
@@ -1214,7 +1715,6 @@ elif pagina == "Ingresos":
     with col_r:
         r_sel = st.selectbox("👤 Responsable:", responsables, index=resp_idx,
                              disabled=(st.session_state.user_role != "admin"))
-    # ← NUEVO: df_raw ya viene filtrado (solo activos), no se requiere cambio aquí
     df_u = df_raw[df_raw["Unidad de Negocio"] == u_sel] if not df_raw.empty else pd.DataFrame()
     if df_u.empty:
         st.warning("Sin insumos registrados para esta unidad.")
@@ -1355,6 +1855,9 @@ elif pagina == "Ingresos":
 
 # ── CONSULTA ─────────────────────────────────────────────────
 elif pagina == "Consulta":
+    if not tiene_permiso("Consulta"):
+        st.error("No tienes permiso para esta página.")
+        st.stop()
     df_raw, df_historial = cargar_datos_integrales()
     st.title("📦 Inventario actual")
     u_sel     = st.selectbox("🏢 Unidad:", UNIDADES)
@@ -1405,6 +1908,9 @@ elif pagina == "Consulta":
 
 # ── VENTAS — REGISTRO DIARIO ─────────────────────────────────
 elif pagina == "Ventas":
+    if not tiene_permiso("Ventas"):
+        st.error("No tienes permiso para esta página.")
+        st.stop()
     st.title("📈 Registrar Venta Diaria — Noble")
     mostrar_avisos()
     if not st.session_state.auth_status:
@@ -1491,7 +1997,6 @@ elif pagina == "Ventas":
 
     notas_v = st.text_input("📝 Notas del día (opcional):", placeholder="Ej: Día festivo, falla de sistema, etc.")
 
-    # ── CAMBIO 1 ── Toggle para registrar día operativo con venta en cero ───────
     dia_sin_venta = st.toggle(
         "📵 Día sin venta (cierre en cero)",
         value=False,
@@ -1500,22 +2005,17 @@ elif pagina == "Ventas":
     )
     if dia_sin_venta and venta_total == 0:
         st.warning("⚠️ Se registrará este día con venta = $0. Asegúrate de que la cafetería operó pero no tuvo ingresos.")
-    # ── FIN CAMBIO 1 ─────────────────────────────────────────────────────────────
 
     st.divider()
     if st.button("💾 GUARDAR REGISTRO DE VENTA", type="primary", use_container_width=True):
-        # ── CAMBIO 1 (continuación) ── Condición modificada para permitir día sin venta ─
         if venta_total == 0 and total_tix == 0 and not dia_sin_venta:
             st.warning("⚠️ Ingresa al menos un valor de venta o tickets, o activa 'Día sin venta' para registrar un cierre en cero.")
-        # ── FIN CAMBIO 1 (continuación) ──────────────────────────────────────────────────
         else:
             ws_v, err = _asegurar_hoja_ventas()
             if err:
                 st.error(err)
             else:
-                # ── CAMBIO 1 (continuación) ── Inyectar nota automática si día sin venta ─
                 notas_final = notas_v if notas_v.strip() else ("DÍA SIN VENTA" if dia_sin_venta else "")
-                # ── FIN CAMBIO 1 (continuación) ──────────────────────────────────────────
                 fila = _construir_fila_venta(
                     fecha=fecha_venta, efectivo=efectivo, transferencias=transferencias,
                     tarjeta=tarjeta, uber=uber, rappi=rappi,
@@ -1534,6 +2034,9 @@ elif pagina == "Ventas":
 
 # ── VENTAS — DASHBOARD ────────────────────────────────────────
 elif pagina == "DashboardVentas":
+    if not tiene_permiso("DashboardVentas"):
+        st.error("No tienes permiso para esta página.")
+        st.stop()
     st.title("📊 Dashboard de Ventas — Noble")
     df_v = cargar_ventas()
     if df_v.empty:
@@ -1571,15 +2074,12 @@ elif pagina == "DashboardVentas":
     faltante   = meta_m - venta_acum
     avance_pct = (venta_acum / meta_m * 100) if meta_m > 0 else 0
 
-    # ── CAMBIO 2 ── Cálculo de días con/sin venta para métricas precisas ────────
     dias_con_venta_cnt  = int((df_mes["Venta_Diaria"] > 0).sum())
     dias_sin_venta_cnt  = int((df_mes["Venta_Diaria"] == 0).sum())
-    # Ticket promedio real: excluye días con tickets = 0 para no distorsionar el promedio
     df_con_tix          = df_mes[df_mes["Total_Tickets"] > 0]
     tix_acum_con_venta  = int(df_con_tix["Total_Tickets"].sum())
     venta_acum_con_tix  = df_con_tix["Venta_Diaria"].sum()
     tix_prom_real       = round(venta_acum_con_tix / tix_acum_con_venta, 2) if tix_acum_con_venta > 0 else 0
-    # ── FIN CAMBIO 2 ─────────────────────────────────────────────────────────────
 
     st.subheader(f"Resumen — {mes_sel_str}")
     k1,k2,k3,k4 = st.columns(4)
@@ -1589,36 +2089,14 @@ elif pagina == "DashboardVentas":
               delta_color="normal" if faltante <= 0 else "inverse")
     k4.metric("Ticket Promedio", f"${tix_prom_g:,.2f}")
 
-    # ── CAMBIO 2 (continuación) ── Fila de métricas de tickets y cobertura diaria ─
     st.divider()
     st.subheader("🎫 Métricas de Tickets")
     tk1, tk2, tk3, tk4 = st.columns(4)
-    tk1.metric(
-        "Tickets Acumulados",
-        f"{tix_total:,}",
-        help="Total de transacciones registradas en el mes (POS + Uber + Rappi)."
-    )
-    tk2.metric(
-        "Ticket Promedio Real",
-        f"${tix_prom_real:,.2f}" if tix_prom_real > 0 else "—",
-        help="Promedio calculado únicamente sobre días con al menos un ticket. "
-             "Excluye días sin venta para no distorsionar el indicador."
-    )
-    tk3.metric(
-        "Días con Venta",
-        f"{dias_con_venta_cnt}",
-        delta=f"de {len(df_mes)} registrados",
-        delta_color="off",
-        help="Días del mes donde se registró al menos un peso de venta."
-    )
-    tk4.metric(
-        "Días sin Venta",
-        f"{dias_sin_venta_cnt}",
-        delta_color="inverse" if dias_sin_venta_cnt > 0 else "off",
-        help="Días registrados explícitamente con venta = $0. "
-             "Un valor mayor a 0 indica días operativos sin ingresos (no días sin captura)."
-    )
-    # ── FIN CAMBIO 2 (continuación) ──────────────────────────────────────────────
+    tk1.metric("Tickets Acumulados", f"{tix_total:,}", help="Total de transacciones registradas en el mes (POS + Uber + Rappi).")
+    tk2.metric("Ticket Promedio Real", f"${tix_prom_real:,.2f}" if tix_prom_real > 0 else "—",
+               help="Promedio calculado únicamente sobre días con al menos un ticket.")
+    tk3.metric("Días con Venta", f"{dias_con_venta_cnt}", delta=f"de {len(df_mes)} registrados", delta_color="off")
+    tk4.metric("Días sin Venta", f"{dias_sin_venta_cnt}", delta_color="inverse" if dias_sin_venta_cnt > 0 else "off")
 
     st.divider()
     if not df_mes.empty:
@@ -1676,6 +2154,9 @@ elif pagina == "DashboardVentas":
 
 # ── VENTAS — IMPORTAR HISTÓRICO ──────────────────────────────
 elif pagina == "ImportarVentas":
+    if not tiene_permiso("ImportarVentas"):
+        st.error("No tienes permiso para esta página.")
+        st.stop()
     st.title("📥 Importar Histórico de Ventas")
     mostrar_avisos()
     if not st.session_state.auth_status:
@@ -1791,10 +2272,12 @@ elif pagina == "ImportarVentas":
 
 # ── IMPRESIÓN ─────────────────────────────────────────────────
 elif pagina == "Impresion":
+    if not tiene_permiso("Impresion"):
+        st.error("No tienes permiso para esta página.")
+        st.stop()
     df_raw, _ = cargar_datos_integrales()
     st.title("🖨️ Ticket de Conteo (58mm)")
     u_sel = st.selectbox("Sucursal:", UNIDADES)
-    # ← NUEVO: df_raw ya viene filtrado (solo activos), no se requiere cambio aquí
     df_u  = df_raw[df_raw["Unidad de Negocio"] == u_sel] if not df_raw.empty else pd.DataFrame()
     grps  = sorted(df_u["Grupo"].dropna().unique().tolist()) if not df_u.empty and "Grupo" in df_u.columns else []
     g_sel = st.multiselect("Filtrar por Grupos:", grps)
@@ -1838,40 +2321,56 @@ elif pagina == "Impresion":
 
 # ── LISTA DE COMPRA ───────────────────────────────────────────
 elif pagina == "ListaCompra":
+    if not tiene_permiso("ListaCompra"):
+        st.error("No tienes permiso para esta página.")
+        st.stop()
     _, df_historial = cargar_datos_integrales()
-    st.title("🛒 Ticket de Compra (58mm)")
-    u_sel     = st.radio("Generar orden para:", UNIDADES, horizontal=True)
-    df_actual = obtener_ultimo_inventario(df_historial, u_sel)
+    st.title("🛒 Lista de Compra")
+    u_opcion = st.selectbox("Filtrar por unidad:", ["Todas"] + UNIDADES)
+    if u_opcion == "Todas":
+        df_actual = obtener_ultimo_inventario(df_historial)
+    else:
+        df_actual = obtener_ultimo_inventario(df_historial, u_opcion)
     if df_actual.empty:
         st.info("Sin registros para armar la lista de compra.")
         st.stop()
-    com = df_actual[df_actual["Necesita Compra"] == True]
+    com = df_actual[df_actual["Necesita Compra"] == True].copy()
     if not com.empty:
-        lineas_pdf = [
-            (f"* COMPRAS {u_sel.upper()} *", "title"),
-            (f"Fecha: {ahora_hermosillo().strftime('%d/%m/%Y')}", "small"),
-            ("", "divider"),
-        ]
-        for _, r in com.iterrows():
-            lineas_pdf.append((f"* {str(r['Nombre del Insumo'])[:22]}", "bold"))
-            lineas_pdf.append((f"  Stock:{r['Stock Neto Calculado']} Min:{r['Stock Mínimo']}", "small"))
-            lineas_pdf.append(("", "divider"))
-        with st.expander("👁️ Vista previa del contenido", expanded=True):
-            prev_txt = f"{'='*28}\n* COMPRAS {u_sel.upper()} *\nFecha: {ahora_hermosillo().strftime('%d/%m/%Y')}\n{'-'*28}\n"
+        st.subheader("📋 Insumos con necesidad de compra")
+        cols_compra = ["Unidad de Negocio","Nombre del Insumo","Marca","Proveedor","Grupo",
+                       "Presentación de Compra","Unidad de Medida","Stock Neto Calculado",
+                       "Stock Mínimo","Necesita Compra","Responsable","Fecha de Inventario","Observaciones"]
+        cols_compra_ok = [c for c in cols_compra if c in com.columns]
+        st.dataframe(com[cols_compra_ok].sort_values(["Unidad de Negocio","Grupo"]),
+                     use_container_width=True, hide_index=True)
+        with st.expander("🖨️ Descargar PDF (58mm)"):
+            lineas_pdf = [
+                (f"* COMPRAS {u_opcion.upper() if u_opcion!='Todas' else 'GLOBAL'} *", "title"),
+                (f"Fecha: {ahora_hermosillo().strftime('%d/%m/%Y')}", "small"),
+                ("", "divider"),
+            ]
+            for _, r in com.iterrows():
+                lineas_pdf.append((f"* {str(r['Nombre del Insumo'])[:22]}", "bold"))
+                lineas_pdf.append((f"  Stock:{r['Stock Neto Calculado']} Min:{r['Stock Mínimo']}", "small"))
+                lineas_pdf.append(("", "divider"))
+            prev_txt = f"{'='*28}\n* COMPRAS {u_opcion.upper() if u_opcion!='Todas' else 'GLOBAL'} *\nFecha: {ahora_hermosillo().strftime('%d/%m/%Y')}\n{'-'*28}\n"
             for _, r in com.iterrows():
                 prev_txt += f"• {str(r['Nombre del Insumo'])[:22]}\n  Stock: {r['Stock Neto Calculado']} / Min: {r['Stock Mínimo']}\n{'-'*28}\n"
             st.code(prev_txt, language=None)
-        pdf_bytes = generar_pdf_58mm(f"Compras {u_sel}", lineas_pdf)
-        st.download_button(
-            label="📄 Descargar PDF 58mm", data=pdf_bytes,
-            file_name=f"compras_{u_sel.replace(' ','_')}_{ahora_hermosillo().strftime('%Y%m%d_%H%M')}.pdf",
-            mime="application/pdf", use_container_width=True, type="primary"
-        )
+            pdf_bytes = generar_pdf_58mm(f"Compras {u_opcion}", lineas_pdf)
+            st.download_button(
+                label="📄 Descargar PDF 58mm", data=pdf_bytes,
+                file_name=f"compras_{u_opcion.replace(' ','_')}_{ahora_hermosillo().strftime('%Y%m%d_%H%M')}.pdf",
+                mime="application/pdf", use_container_width=True, type="primary"
+            )
     else:
         st.success("No hay alertas de reabastecimiento activas.")
 
 # ── REPORTE DE STOCK ──────────────────────────────────────────
 elif pagina == "ReporteStock":
+    if not tiene_permiso("ReporteStock"):
+        st.error("No tienes permiso para esta página.")
+        st.stop()
     _, df_historial = cargar_datos_integrales()
     st.title("📦 Reporte de Stock (58mm)")
     u_sel     = st.radio("Generar reporte para:", UNIDADES, horizontal=True)
@@ -1916,6 +2415,9 @@ elif pagina == "ReporteStock":
 
 # ── CORTE DE MES ──────────────────────────────────────────────
 elif pagina == "CorteMes":
+    if not tiene_permiso("CorteMes"):
+        st.error("No tienes permiso para esta página.")
+        st.stop()
     _, df_historial = cargar_datos_integrales()
     if st.session_state.user_role != "admin":
         st.error("🚫 Acceso denegado. Solo administradores.")
@@ -1982,3 +2484,1152 @@ elif pagina == "CorteMes":
             except Exception as e:
                 status.update(label="❌ Falla en el cierre", state="error")
                 st.error(f"Error durante el cierre: {e}\n\nEl Historial NO fue eliminado.")
+
+# ══════════════════════════════════════════════════════════════
+# MÓDULO FINANCIERO — PÁGINAS NUEVAS
+# ══════════════════════════════════════════════════════════════
+
+# ── REGISTRAR GASTO ──────────────────────────────────────────
+elif pagina == "RegistrarGasto":
+    if not tiene_permiso("RegistrarGasto"):
+        st.error("No tienes permiso para esta página.")
+        st.stop()
+    st.title("💰 Registrar Gasto")
+    mostrar_avisos()
+    if not st.session_state.auth_status:
+        st.error("🔒 Autenticación requerida.")
+        st.stop()
+
+    df_gastos = cargar_gastos()
+
+    with st.form("f_gasto", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            fecha_g   = st.date_input("📅 Fecha:", value=ahora_hermosillo().date())
+            periodo_g = st.selectbox("📆 Período:", ["Día", "Mes"])
+            tipo_g    = st.selectbox("🔖 Tipo:", ["Fijo", "Variable"],
+                                     help="Fijo: se repite cada período (renta, nómina). Variable: depende del volumen o circunstancias.")
+        with col2:
+            categoria_g = st.text_input("📂 Categoría:", placeholder="Ej: Renta, Nómina, Gas, Servicios, Insumos...")
+            concepto_g  = st.text_input("📝 Concepto:", placeholder="Descripción específica del gasto")
+            monto_g     = st.number_input("💵 Monto ($):", min_value=0.0, step=10.0)
+
+        responsables_g = st.session_state.responsables or ["Raúl"]
+        resp_idx_g = responsables_g.index(st.session_state.current_user) if st.session_state.current_user in responsables_g else 0
+        responsable_g = st.selectbox("👤 Responsable:", responsables_g, index=resp_idx_g,
+                                      disabled=(st.session_state.user_role != "admin"))
+        notas_g = st.text_input("📋 Notas (opcional):")
+
+        if st.form_submit_button("💾 REGISTRAR GASTO", type="primary", use_container_width=True):
+            if not categoria_g.strip():
+                st.error("La categoría es obligatoria.")
+            elif not concepto_g.strip():
+                st.error("El concepto es obligatorio.")
+            elif monto_g <= 0:
+                st.error("El monto debe ser mayor a cero.")
+            else:
+                ws_g, err = _asegurar_hoja_gastos()
+                if err:
+                    st.error(err)
+                else:
+                    import uuid
+                    fila_g = [
+                        str(uuid.uuid4())[:8],
+                        fecha_g.strftime("%Y-%m-%d"),
+                        periodo_g, tipo_g, categoria_g.strip(), concepto_g.strip(),
+                        monto_g, responsable_g, notas_g.strip()
+                    ]
+                    ok, msg = append_rows_con_retry(ws_g, [fila_g])
+                    if ok:
+                        st.cache_data.clear()
+                        st.success(f"✅ Gasto registrado: ${monto_g:,.2f} — {concepto_g.strip()}")
+                        time.sleep(0.5)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+    st.divider()
+    st.subheader("📋 Gastos recientes")
+    if not df_gastos.empty:
+        cols_g_show = ["Fecha","Periodo","Tipo","Categoria","Concepto","Monto","Responsable","Notas"]
+        cols_g_ok   = [c for c in cols_g_show if c in df_gastos.columns]
+        df_g_disp   = df_gastos[cols_g_ok].copy()
+        df_g_disp["Fecha"] = pd.to_datetime(df_g_disp["Fecha"], errors="coerce")
+        st.dataframe(df_g_disp.sort_values("Fecha", ascending=False).head(30), hide_index=True, use_container_width=True)
+
+        hoy_g = ahora_hermosillo().date()
+        df_gastos["_fecha_dt"] = pd.to_datetime(df_gastos["Fecha"], errors="coerce")
+        df_g_mes = df_gastos[
+            (df_gastos["_fecha_dt"].dt.month == hoy_g.month) &
+            (df_gastos["_fecha_dt"].dt.year  == hoy_g.year)
+        ]
+        total_mes_g   = df_g_mes["Monto"].apply(limpiar_valor).sum()
+        total_fijos   = df_g_mes[df_g_mes["Tipo"]=="Fijo"]["Monto"].apply(limpiar_valor).sum()
+        total_var     = df_g_mes[df_g_mes["Tipo"]=="Variable"]["Monto"].apply(limpiar_valor).sum()
+
+        mg1, mg2, mg3 = st.columns(3)
+        mg1.metric("💸 Total gastado este mes", f"${total_mes_g:,.2f}")
+        mg2.metric("🔒 Gastos Fijos",           f"${total_fijos:,.2f}")
+        mg3.metric("🔄 Gastos Variables",       f"${total_var:,.2f}")
+    else:
+        st.info("Sin gastos registrados aún.")
+
+# ── PRESUPUESTO ANUAL ─────────────────────────────────────────
+elif pagina == "Presupuesto":
+    if not tiene_permiso("Presupuesto"):
+        st.error("No tienes permiso para esta página.")
+        st.stop()
+    st.title("📋 Presupuesto Anual")
+    if not st.session_state.auth_status:
+        st.error("🔒 Autenticación requerida.")
+        st.stop()
+
+    df_ppto = cargar_presupuesto()
+    año_actual_p = ahora_hermosillo().year
+    años_opts    = list(range(2024, 2031))
+    idx_año_def  = años_opts.index(año_actual_p) if año_actual_p in años_opts else 1
+    año_sel      = st.selectbox("📅 Año:", años_opts, index=idx_año_def)
+
+    ppto_año = {}
+    if not df_ppto.empty:
+        df_año_p = df_ppto[df_ppto["Año"].apply(limpiar_valor) == año_sel]
+        for _, r in df_año_p.iterrows():
+            mes_p = int(limpiar_valor(r["Mes"]))
+            if 1 <= mes_p <= 12:
+                ppto_año[mes_p] = {
+                    "Meta_Total": limpiar_valor(r.get("Meta_Total", 0)),
+                    "Meta_POS":   limpiar_valor(r.get("Meta_POS",   0)),
+                    "Meta_Uber":  limpiar_valor(r.get("Meta_Uber",  0)),
+                    "Meta_Rappi": limpiar_valor(r.get("Meta_Rappi", 0)),
+                    "Notas":      str(r.get("Notas", "")),
+                }
+
+    desglose_p = st.toggle("🔀 Desglosar por canal (POS / Uber Eats / Rappi)", value=False)
+    st.subheader(f"Metas mensuales — {año_sel}")
+    meses_nombres_p = [calendar.month_name[m].capitalize() for m in range(1, 13)]
+    entradas_p = {}
+
+    for row_i in range(4):
+        cols_p = st.columns(3)
+        for col_i in range(3):
+            mes_num_p = row_i * 3 + col_i + 1
+            if mes_num_p > 12:
+                break
+            mes_nom_p = meses_nombres_p[mes_num_p - 1]
+            prev_p    = ppto_año.get(mes_num_p, {})
+            with cols_p[col_i]:
+                st.write(f"**{mes_nom_p}**")
+                meta_total_p = st.number_input(
+                    f"Total ({mes_nom_p}):", min_value=0.0, step=1000.0,
+                    value=float(prev_p.get("Meta_Total", 0)),
+                    key=f"ppto_{año_sel}_{mes_num_p}_total"
+                )
+                meta_pos_p = meta_uber_p = meta_rappi_p = 0.0
+                if desglose_p:
+                    meta_pos_p   = st.number_input(f"POS:",   min_value=0.0, step=500.0, value=float(prev_p.get("Meta_POS",   0)), key=f"ppto_{año_sel}_{mes_num_p}_pos")
+                    meta_uber_p  = st.number_input(f"Uber:",  min_value=0.0, step=500.0, value=float(prev_p.get("Meta_Uber",  0)), key=f"ppto_{año_sel}_{mes_num_p}_uber")
+                    meta_rappi_p = st.number_input(f"Rappi:", min_value=0.0, step=500.0, value=float(prev_p.get("Meta_Rappi", 0)), key=f"ppto_{año_sel}_{mes_num_p}_rappi")
+                entradas_p[mes_num_p] = {
+                    "Meta_Total": meta_total_p, "Meta_POS": meta_pos_p,
+                    "Meta_Uber": meta_uber_p, "Meta_Rappi": meta_rappi_p, "Notas": "",
+                }
+
+    total_anual_p = sum(v["Meta_Total"] for v in entradas_p.values())
+    st.divider()
+    st.metric("💰 Presupuesto Anual Total", f"${total_anual_p:,.2f}")
+
+    if st.button("💾 GUARDAR PRESUPUESTO", type="primary", use_container_width=True):
+        ws_ppto, err_ppto = _asegurar_hoja_presupuesto()
+        if err_ppto:
+            st.error(err_ppto)
+        else:
+            try:
+                todos_ppto = ws_ppto.get_all_values()
+                if len(todos_ppto) > 1:
+                    df_todos_p = pd.DataFrame(todos_ppto[1:], columns=todos_ppto[0])
+                    df_sin_año = df_todos_p[df_todos_p["Año"].astype(str).str.strip() != str(año_sel)]
+                    ws_ppto.clear()
+                    ws_ppto.append_row(COLS_PRESUPUESTO)
+                    if not df_sin_año.empty:
+                        ws_ppto.append_rows(df_sin_año.values.tolist(), value_input_option="USER_ENTERED")
+                else:
+                    ws_ppto.clear()
+                    ws_ppto.append_row(COLS_PRESUPUESTO)
+                nuevas_filas_p = [
+                    [año_sel, mes_n, v["Meta_Total"], v["Meta_POS"], v["Meta_Uber"], v["Meta_Rappi"], v["Notas"]]
+                    for mes_n, v in entradas_p.items()
+                ]
+                ws_ppto.append_rows(nuevas_filas_p, value_input_option="USER_ENTERED")
+                st.cache_data.clear()
+                st.success(f"✅ Presupuesto {año_sel} guardado. Total anual: ${total_anual_p:,.2f}")
+                time.sleep(0.5)
+                st.rerun()
+            except Exception as e_ppto:
+                st.error(f"Error al guardar presupuesto: {e_ppto}")
+
+# ── BASE DE COSTOS (REFACTORIZADA) ────────────────────────────
+elif pagina == "BaseCostos":
+    if not tiene_permiso("BaseCostos"):
+        st.error("No tienes permiso para esta página.")
+        st.stop()
+    st.title("🧾 Base de Costos y Recetas")
+    mostrar_avisos()
+    if not st.session_state.auth_status:
+        st.error("🔒 Autenticación requerida.")
+        st.stop()
+
+    tab_costos, tab_recetas = st.tabs(["💰 Costos de Insumos", "🍽️ Recetas"])
+
+    # ── TAB: COSTOS DE INSUMOS ──
+    with tab_costos:
+        st.subheader("Registro de Costo de Insumos (desde catálogo)")
+        df_ci = cargar_costos_insumos()
+        df_cat = cargar_datos_integrales()[0]
+        if df_cat.empty:
+            st.warning("No hay insumos activos en el catálogo.")
+        else:
+            with st.form("f_costo_insumo", clear_on_submit=True):
+                insumo_opts = sorted(df_cat["Nombre del Insumo"].dropna().unique())
+                insumo_sel = st.selectbox("Selecciona el Insumo:", insumo_opts)
+                mask_cat = df_cat["Nombre del Insumo"] == insumo_sel
+                info_cat = {}
+                if mask_cat.any():
+                    info_cat = df_cat[mask_cat].iloc[0].to_dict()
+                marca_ci = st.text_input("Marca:", value=str(info_cat.get("Marca","")))
+                prov_ci  = st.text_input("Proveedor:", value=str(info_cat.get("Proveedor","")))
+                um_ci    = st.selectbox("Unidad de Medida:", UNIDADES_MED, index=UNIDADES_MED.index(str(info_cat.get("Unidad de Medida","pz")).lower()) if str(info_cat.get("Unidad de Medida","pz")).lower() in UNIDADES_MED else 0)
+                pres_ci  = st.text_input("Presentación:", value=str(info_cat.get("Presentación de Compra","")))
+                costo_pres = st.number_input("Costo de la Presentación ($):", min_value=0.0, step=0.5, value=0.0)
+                costo_unit = st.number_input("Costo por Unidad ($):", min_value=0.0, step=0.001, value=0.0,
+                                             help="Costo por gramo, mililitro, pieza, etc.")
+                unidad_costo = st.text_input("Unidad de Costo:", placeholder="Ej: $/gr, $/ml, $/pz")
+                resp_ci = st.selectbox("Responsable:", st.session_state.responsables, index=st.session_state.responsables.index(st.session_state.current_user) if st.session_state.current_user in st.session_state.responsables else 0)
+                if st.form_submit_button("💾 Guardar Costo"):
+                    if costo_pres <= 0:
+                        st.error("El costo de la presentación debe ser mayor a cero.")
+                    else:
+                        ws_ci, err = _asegurar_hoja_costos_insumos()
+                        if err:
+                            st.error(err)
+                        else:
+                            fila_ci = [insumo_sel, marca_ci, prov_ci, um_ci, pres_ci, costo_pres, costo_unit, unidad_costo, ts_hermosillo(), resp_ci]
+                            ok, msg = append_rows_con_retry(ws_ci, [fila_ci])
+                            if ok:
+                                st.cache_data.clear()
+                                st.success(f"Costo de {insumo_sel} registrado.")
+                                time.sleep(0.5)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+
+        st.subheader("📋 Costos registrados")
+        if not df_ci.empty:
+            df_ci_latest = df_ci.sort_values("Fecha_Captura").drop_duplicates(subset=["Nombre_Insumo"], keep="last")
+            st.dataframe(df_ci_latest, hide_index=True, use_container_width=True)
+        else:
+            st.info("Sin costos registrados aún.")
+
+    # ── TAB: RECETAS ──
+    with tab_recetas:
+        st.subheader("Crear / Editar Receta")
+        df_rec = cargar_recetas()
+        df_ci2 = cargar_costos_insumos()
+        df_cat2 = cargar_datos_integrales()[0]
+        recetas_existentes = sorted(df_rec["Receta"].unique()) if not df_rec.empty else []
+
+        modo_receta = st.radio("Modo:", ["Nueva receta", "Editar receta existente"])
+        if modo_receta == "Editar receta existente":
+            if recetas_existentes:
+                receta_edit_sel = st.selectbox("Selecciona receta:", recetas_existentes)
+                if st.button("Cargar receta"):
+                    df_edit = df_rec[df_rec["Receta"] == receta_edit_sel].copy()
+                    if not df_edit.empty:
+                        st.session_state.ingredientes_receta = [
+                            {"insumo": r["Ingrediente"], "cantidad": limpiar_valor(r["Cantidad"]),
+                             "unidad_medida": r["Unidad_Medida"],
+                             "costo_unit": limpiar_valor(df_ci2[df_ci2["Nombre_Insumo"]==r["Ingrediente"]]["Costo_Unitario"].tail(1).values[0] if not df_ci2[df_ci2["Nombre_Insumo"]==r["Ingrediente"]].empty else 0)}
+                            for _, r in df_edit.iterrows()
+                        ]
+                        st.success(f"Receta '{receta_edit_sel}' cargada con {len(st.session_state.ingredientes_receta)} ingredientes.")
+            else:
+                st.info("No hay recetas aún.")
+                modo_receta = "Nueva receta"
+
+        # Sección para agregar ingrediente (fuera del formulario)
+        if st.button("➕ Agregar otro ingrediente"):
+            st.session_state.show_add_ing = True
+            st.rerun()
+
+        if st.session_state.show_add_ing:
+            with st.container():
+                st.write("**Nuevo ingrediente**")
+                insumo_opt = sorted(df_cat2["Nombre del Insumo"].dropna().unique()) if not df_cat2.empty else []
+                insumo_add = st.selectbox("Ingrediente:", insumo_opt, key="add_ing_sel")
+                cantidad_add = st.number_input("Cantidad:", min_value=0.0, step=0.1, key="add_cant")
+                costo_uni_add = 0.0
+                if not df_ci2.empty:
+                    mask_ci = df_ci2["Nombre_Insumo"] == insumo_add
+                    if mask_ci.any():
+                        costo_uni_add = limpiar_valor(df_ci2[mask_ci].sort_values("Fecha_Captura").iloc[-1]["Costo_Unitario"])
+                st.write(f"Costo Unitario: ${costo_uni_add:.4f}")
+                ud_med_add = str(df_cat2[df_cat2["Nombre del Insumo"]==insumo_add].iloc[0].get("Unidad de Medida","pz"))
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("Agregar a la receta"):
+                        st.session_state.ingredientes_receta.append({
+                            "insumo": insumo_add,
+                            "cantidad": cantidad_add,
+                            "unidad_medida": ud_med_add,
+                            "costo_unit": costo_uni_add
+                        })
+                        st.session_state.show_add_ing = False
+                        st.rerun()
+                with c2:
+                    if st.button("Cancelar"):
+                        st.session_state.show_add_ing = False
+                        st.rerun()
+
+        # Mostrar ingredientes actuales (fuera del formulario)
+        if st.session_state.ingredientes_receta:
+            st.subheader("Ingredientes en la receta")
+            costo_total_rec = sum(
+                (ing["cantidad"] * ing["costo_unit"]) if ing["costo_unit"] else 0.0
+                for ing in st.session_state.ingredientes_receta
+            )
+            st.caption(f"Costo total acumulado: ${costo_total_rec:,.4f}")
+            for i, ing in enumerate(st.session_state.ingredientes_receta):
+                c1, c2, c3, c4 = st.columns([3,1,1,1])
+                with c1:
+                    st.write(f"**{ing['insumo']}**")
+                with c2:
+                    st.write(f"{ing['cantidad']} {ing['unidad_medida']}")
+                with c3:
+                    if ing['costo_unit']:
+                        st.write(f"Pu: ${ing['costo_unit']:.4f}")
+                with c4:
+                    if st.button("❌", key=f"del_ing_{i}"):
+                        st.session_state.ingredientes_receta.pop(i)
+                        st.rerun()
+
+        # Formulario principal para guardar receta
+        with st.form("f_receta_base"):
+            col_rec1, col_rec2 = st.columns(2)
+            with col_rec1:
+                nombre_receta = st.text_input("Nombre de la Receta:")
+                unidad_rec = st.selectbox("Unidad de Negocio:", UNIDADES)
+            with col_rec2:
+                precio_venta_rec = st.number_input("Precio de Venta ($):", min_value=0.0, step=5.0)
+                factor_rec = st.number_input("Factor de precio sugerido:", min_value=0.1, step=0.1, value=2.5)
+
+            if st.session_state.ingredientes_receta:
+                costo_total_rec = sum(
+                    (ing["cantidad"] * ing["costo_unit"]) if ing["costo_unit"] else 0.0
+                    for ing in st.session_state.ingredientes_receta
+                )
+                precio_sug = costo_total_rec * factor_rec
+                st.metric("Costo Total Receta", f"${costo_total_rec:,.4f}")
+                st.metric("Precio Sugerido", f"${precio_sug:,.2f}")
+                if precio_venta_rec > 0:
+                    fc_pct = (costo_total_rec / precio_venta_rec * 100)
+                    st.metric("Food Cost %", f"{fc_pct:.1f}%")
+
+            if st.form_submit_button("💾 Guardar Receta"):
+                if not nombre_receta.strip():
+                    st.error("El nombre de la receta es obligatorio.")
+                elif not st.session_state.ingredientes_receta:
+                    st.error("Agrega al menos un ingrediente.")
+                else:
+                    ws_rec, err = _asegurar_hoja_recetas()
+                    if err:
+                        st.error(err)
+                    else:
+                        if modo_receta == "Editar receta existente" and receta_edit_sel:
+                            all_data = ws_rec.get_all_values()
+                            if len(all_data) > 1:
+                                df_all = pd.DataFrame(all_data[1:], columns=all_data[0])
+                                df_all = df_all[df_all["Receta"] != receta_edit_sel]
+                                ws_rec.clear()
+                                ws_rec.append_row(COLS_RECETAS)
+                                if not df_all.empty:
+                                    ws_rec.append_rows(df_all.values.tolist())
+                        filas_rec = []
+                        costo_total_r = 0.0
+                        for ing in st.session_state.ingredientes_receta:
+                            costo_ing = ing["cantidad"] * ing["costo_unit"]
+                            costo_total_r += costo_ing
+                            filas_rec.append([
+                                nombre_receta, ing["insumo"], ing["cantidad"], ing["unidad_medida"],
+                                costo_ing, precio_venta_rec,
+                                round((costo_total_r / precio_venta_rec * 100) if precio_venta_rec > 0 else 0.0, 2),
+                                ts_hermosillo(), st.session_state.current_user
+                            ])
+                        ok, msg = append_rows_con_retry(ws_rec, filas_rec)
+                        if ok:
+                            st.cache_data.clear()
+                            st.success(f"Receta '{nombre_receta}' guardada con {len(filas_rec)} ingredientes.")
+                            st.session_state.ingredientes_receta = []
+                            st.session_state.show_add_ing = False
+                            time.sleep(0.5)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+
+        if not df_rec.empty:
+            st.subheader("📋 Recetas registradas")
+            df_rec_s = df_rec.copy()
+            st.dataframe(df_rec_s, hide_index=True, use_container_width=True)
+
+# ── REGISTRAR MERMA ───────────────────────────────────────────
+elif pagina == "RegistrarMerma":
+    if not tiene_permiso("RegistrarMerma"):
+        st.error("No tienes permiso para esta página.")
+        st.stop()
+    st.title("📉 Registrar Merma")
+    mostrar_avisos()
+    if not st.session_state.auth_status:
+        st.error("🔒 Autenticación requerida.")
+        st.stop()
+
+    df_merma_reg = cargar_merma()
+    df_bc_m      = cargar_costos_insumos()
+
+    ingredientes_con_costo = []
+    if not df_bc_m.empty:
+        ingredientes_con_costo = df_bc_m["Nombre_Insumo"].dropna().tolist()
+
+    with st.form("f_merma", clear_on_submit=True):
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            fecha_m    = st.date_input("📅 Fecha:", value=ahora_hermosillo().date())
+            producto_m = st.text_input("🍵 Producto afectado:", placeholder="Ej: Latte, Croissant...")
+            ingr_m_opts = ["(Escribir manualmente)"] + sorted(ingredientes_con_costo)
+            ingr_m_sel  = st.selectbox("🥛 Ingrediente (desde Costos de Insumos):", ingr_m_opts)
+            ingr_m_manual = ""
+            if ingr_m_sel == "(Escribir manualmente)":
+                ingr_m_manual = st.text_input("Nombre del ingrediente:")
+            ingr_m_final = ingr_m_manual if ingr_m_sel == "(Escribir manualmente)" else ingr_m_sel
+        with col_m2:
+            cantidad_m = st.number_input("📦 Cantidad de merma:", min_value=0.0, step=0.1)
+            unidad_m   = st.selectbox("Unidad:", UNIDADES_MED)
+            motivo_m   = st.text_input("🔍 Motivo:", placeholder="Ej: Vencido, Error de preparación, Derrame...")
+            comentarios_m = st.text_area("💬 Comentarios:", height=80)
+
+        costo_unit_m  = 0.0
+        costo_total_m = 0.0
+        if ingr_m_final and not df_bc_m.empty:
+            mask_ingr_m = df_bc_m["Nombre_Insumo"].astype(str).str.strip().str.lower() == ingr_m_final.strip().lower()
+            if mask_ingr_m.any():
+                df_bc_ingr_m = df_bc_m[mask_ingr_m].copy()
+                df_bc_ingr_m["Fecha_Captura"] = pd.to_datetime(df_bc_ingr_m["Fecha_Captura"], errors="coerce")
+                ultimo_costo_m = df_bc_ingr_m.sort_values("Fecha_Captura").iloc[-1]
+                costo_unit_m   = limpiar_valor(ultimo_costo_m.get("Costo_Unitario", 0))
+                costo_total_m  = round(cantidad_m * costo_unit_m, 4)
+                if costo_unit_m > 0:
+                    st.info(f"💵 Costo estimado: **${costo_total_m:,.4f}** ({cantidad_m} × ${costo_unit_m}/unidad)")
+                else:
+                    st.warning("⚠️ Ingrediente encontrado pero sin costo unitario.")
+
+        responsables_m = st.session_state.responsables or ["Raúl"]
+        resp_idx_m = responsables_m.index(st.session_state.current_user) if st.session_state.current_user in responsables_m else 0
+        resp_m = st.selectbox("👤 Responsable:", responsables_m, index=resp_idx_m,
+                               disabled=(st.session_state.user_role != "admin"))
+
+        if st.form_submit_button("📉 REGISTRAR MERMA", type="primary", use_container_width=True):
+            if not ingr_m_final.strip():
+                st.error("El ingrediente es obligatorio.")
+            elif cantidad_m <= 0:
+                st.error("La cantidad debe ser mayor a cero.")
+            elif not motivo_m.strip():
+                st.error("El motivo es obligatorio.")
+            else:
+                ws_merma, err_merma = _asegurar_hoja_merma()
+                if err_merma:
+                    st.error(err_merma)
+                else:
+                    import uuid
+                    fila_merma = [
+                        str(uuid.uuid4())[:8],
+                        fecha_m.strftime("%Y-%m-%d"),
+                        producto_m.strip(), ingr_m_final.strip(), cantidad_m, unidad_m,
+                        motivo_m.strip(), comentarios_m.strip(),
+                        costo_unit_m, costo_total_m, resp_m
+                    ]
+                    ok, msg = append_rows_con_retry(ws_merma, [fila_merma])
+                    if ok:
+                        st.cache_data.clear()
+                        st.success(f"✅ Merma registrada: {cantidad_m} {unidad_m} de {ingr_m_final.strip()} — Costo: ${costo_total_m:,.4f}")
+                        time.sleep(0.5)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+    st.divider()
+    st.subheader("📋 Merma reciente")
+    if not df_merma_reg.empty:
+        cols_mr_show = ["Fecha","Producto","Ingrediente","Cantidad","Unidad_Medida","Motivo","Costo_Unitario","Costo_Total","Responsable"]
+        cols_mr_ok   = [c for c in cols_mr_show if c in df_merma_reg.columns]
+        df_mr_disp   = df_merma_reg[cols_mr_ok].copy()
+        df_mr_disp["Fecha"] = pd.to_datetime(df_mr_disp["Fecha"], errors="coerce")
+        st.dataframe(df_mr_disp.sort_values("Fecha", ascending=False).head(30), hide_index=True, use_container_width=True)
+
+        hoy_mr = ahora_hermosillo().date()
+        df_mr_disp["_fecha_dt"] = df_mr_disp["Fecha"]
+        df_mr_mes = df_mr_disp[
+            (df_mr_disp["_fecha_dt"].dt.month == hoy_mr.month) &
+            (df_mr_disp["_fecha_dt"].dt.year  == hoy_mr.year)
+        ]
+        total_merma_mes = df_mr_mes["Costo_Total"].apply(limpiar_valor).sum() if not df_mr_mes.empty and "Costo_Total" in df_mr_mes.columns else 0.0
+        st.metric("📉 Costo total de merma este mes", f"${total_merma_mes:,.2f}")
+    else:
+        st.info("Sin registros de merma.")
+
+# ── CANALES DE VENTA (NUEVO) ─────────────────────────────────
+elif pagina == "CanalesVenta":
+    if not tiene_permiso("CanalesVenta"):
+        st.error("No tienes permiso para esta página.")
+        st.stop()
+    st.title("🛒 Canales de Venta Adicionales")
+    mostrar_avisos()
+    if not st.session_state.auth_status:
+        st.error("🔒 Autenticación requerida.")
+        st.stop()
+
+    df_cfg = cargar_config_canales()
+    _asegurar_hoja_config_canales()
+
+    tab_can1, tab_can2 = st.tabs(["📋 Registrar Evento", "⚙️ Gestionar Canales"])
+
+    with tab_can2:
+        st.subheader("Configuración de Canales")
+        if not df_cfg.empty:
+            st.dataframe(df_cfg, hide_index=True, use_container_width=True)
+        with st.form("f_new_canal"):
+            canal_nombre = st.text_input("Nombre del Canal:")
+            tipo_meta = st.selectbox("Tipo de Meta:", ["mensual", "fija"])
+            meta_valor = st.number_input("Meta ($):", min_value=0.0, step=100.0)
+            notas_canal = st.text_input("Notas:")
+            if st.form_submit_button("➕ Crear Canal"):
+                if not canal_nombre.strip():
+                    st.error("El nombre del canal es obligatorio.")
+                else:
+                    ws_cfg, err = _asegurar_hoja_config_canales()
+                    if not err:
+                        if not df_cfg.empty and canal_nombre in df_cfg["Canal"].values:
+                            st.error("El canal ya existe.")
+                        else:
+                            ws_cfg.append_row([canal_nombre, tipo_meta, meta_valor, notas_canal], value_input_option="USER_ENTERED")
+                            _asegurar_hoja_canal(canal_nombre)
+                            st.cache_data.clear()
+                            st.success(f"Canal '{canal_nombre}' creado.")
+                            time.sleep(1)
+                            st.rerun()
+                    else:
+                        st.error(err)
+
+    with tab_can1:
+        st.subheader("Registrar Venta por Evento")
+        canales_list = df_cfg["Canal"].tolist() if not df_cfg.empty else []
+        if not canales_list:
+            st.warning("No hay canales configurados. Ve a la pestaña 'Gestionar Canales' para crear uno.")
+        else:
+            canal_sel = st.selectbox("Canal:", canales_list)
+            with st.form("f_evento_canal"):
+                col_ev1, col_ev2 = st.columns(2)
+                with col_ev1:
+                    fecha_ev = st.date_input("Fecha:", value=ahora_hermosillo().date())
+                    monto_ev = st.number_input("Monto ($):", min_value=0.0, step=10.0)
+                with col_ev2:
+                    desc_ev = st.text_input("Descripción / Cliente:")
+                    fecha_serv_ev = st.date_input("Fecha del Servicio / Entrega:", value=fecha_ev)
+                metodo_pago_ev = st.text_input("Método de Pago (opcional):")
+                adeudo_ev = st.number_input("Adeudo / Saldo pendiente ($):", min_value=0.0, step=10.0, value=0.0)
+                resp_ev = st.selectbox("Responsable:", st.session_state.responsables, index=st.session_state.responsables.index(st.session_state.current_user) if st.session_state.current_user in st.session_state.responsables else 0)
+
+                if st.form_submit_button("💾 Registrar Evento"):
+                    if monto_ev <= 0:
+                        st.error("El monto debe ser mayor a cero.")
+                    else:
+                        ws_canal, err = _asegurar_hoja_canal(canal_sel)
+                        if err:
+                            st.error(err)
+                        else:
+                            fila_ev = [
+                                canal_sel, fecha_ev.strftime("%Y-%m-%d"), monto_ev,
+                                desc_ev, fecha_serv_ev.strftime("%Y-%m-%d"),
+                                metodo_pago_ev, resp_ev, str(adeudo_ev)
+                            ]
+                            ok, msg = append_rows_con_retry(ws_canal, [fila_ev])
+                            if ok:
+                                st.cache_data.clear()
+                                st.success(f"Evento registrado en {canal_sel}: ${monto_ev:,.2f}")
+                                time.sleep(0.5)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+
+        st.divider()
+        st.subheader("📋 Eventos recientes")
+        if canales_list:
+            all_events = []
+            for cn in canales_list:
+                ws_cn, _ = safe_worksheet(sh, cn)
+                if ws_cn:
+                    data = ws_cn.get_all_values()
+                    if len(data) > 1:
+                        df_cn = pd.DataFrame(data[1:], columns=data[0])
+                        df_cn = df_cn[["Canal","Fecha","Monto","Descripcion","Fecha_Servicio_Entrega","Metodo_Pago","Adeudo_Saldo_Pendiente"]]
+                        all_events.append(df_cn)
+            if all_events:
+                df_all_events = pd.concat(all_events, ignore_index=True)
+                df_all_events["Fecha"] = pd.to_datetime(df_all_events["Fecha"], errors="coerce")
+                st.dataframe(df_all_events.sort_values("Fecha", ascending=False).head(50), hide_index=True, use_container_width=True)
+            else:
+                st.info("No hay eventos registrados aún.")
+
+# ── DASHBOARD FINANCIERO (incluye pestaña Canales) ────────────
+elif pagina == "DashboardFinanciero":
+    if not tiene_permiso("DashboardFinanciero"):
+        st.error("No tienes permiso para esta página.")
+        st.stop()
+    st.title("📊 Dashboard Financiero")
+
+    df_vf     = cargar_ventas()
+    df_gf     = cargar_gastos()
+    df_pptof  = cargar_presupuesto()
+    df_bcf    = cargar_costos_insumos()
+    df_mermaf = cargar_merma()
+    df_cfg_canales = cargar_config_canales()
+
+    if df_vf.empty:
+        st.info("Sin datos de ventas. Comienza registrando ventas diarias.")
+        st.stop()
+
+    tab_comp, tab_proy, tab_fc, tab_merma_d, tab_pe, tab_canales = st.tabs([
+        "📊 Comparativo",
+        "🔮 Proyecciones",
+        "🍽️ Food Cost & Margen",
+        "📉 Merma",
+        "⚖️ Punto de Equilibrio",
+        "🛒 Canales Adicionales"
+    ])
+
+    # ── TAB 1: COMPARATIVO ────────────────────────────────────
+    with tab_comp:
+        st.subheader("📊 Ventas vs Gastos por Período")
+        periodo_comp = st.radio("Agrupar por:", ["Mes","Trimestre","Cuatrimestre","Año"], horizontal=True)
+
+        df_vm = df_vf.copy()
+        df_vm["Mes_num"] = df_vm["Mes"].apply(limpiar_valor).astype(int)
+        df_vm["Año_num"] = df_vm["Año"].apply(limpiar_valor).astype(int)
+        df_vm = df_vm[(df_vm["Mes_num"] > 0) & (df_vm["Año_num"] > 0)]
+
+        ventas_mens = (
+            df_vm.groupby(["Año_num","Mes_num"])
+            .agg(Ventas=("Venta_Diaria","sum"), POS=("Total_POS","sum"),
+                 Uber=("Uber_Eats","sum"), Rappi=("Rappi","sum"))
+            .reset_index()
+        )
+
+        if not df_gf.empty and "Fecha" in df_gf.columns:
+            df_gm = df_gf.copy()
+            df_gm["_fecha"] = pd.to_datetime(df_gm["Fecha"], errors="coerce")
+            df_gm["Mes_num"] = df_gm["_fecha"].dt.month
+            df_gm["Año_num"] = df_gm["_fecha"].dt.year
+            df_gm["Monto_v"] = df_gm["Monto"].apply(limpiar_valor)
+            g_tot  = df_gm.groupby(["Año_num","Mes_num"])["Monto_v"].sum().reset_index().rename(columns={"Monto_v":"Gastos"})
+            g_fijo = df_gm[df_gm["Tipo"]=="Fijo"].groupby(["Año_num","Mes_num"])["Monto_v"].sum().reset_index().rename(columns={"Monto_v":"Fijos"})
+            g_var  = df_gm[df_gm["Tipo"]=="Variable"].groupby(["Año_num","Mes_num"])["Monto_v"].sum().reset_index().rename(columns={"Monto_v":"Variables"})
+            gastos_mens = g_tot.merge(g_fijo, on=["Año_num","Mes_num"], how="left").merge(g_var, on=["Año_num","Mes_num"], how="left").fillna(0)
+        else:
+            gastos_mens = pd.DataFrame(columns=["Año_num","Mes_num","Gastos","Fijos","Variables"])
+
+        df_comp = ventas_mens.merge(gastos_mens, on=["Año_num","Mes_num"], how="left").fillna(0)
+        df_comp = df_comp.sort_values(["Año_num","Mes_num"])
+        df_comp["Utilidad"] = df_comp["Ventas"] - df_comp["Gastos"]
+        df_comp["_sort"]    = df_comp["Año_num"] * 100 + df_comp["Mes_num"]
+
+        if periodo_comp == "Trimestre":
+            df_comp["Grupo"] = df_comp.apply(lambda r: f"Q{((int(r['Mes_num'])-1)//3)+1} {int(r['Año_num'])}", axis=1)
+        elif periodo_comp == "Cuatrimestre":
+            df_comp["Grupo"] = df_comp.apply(lambda r: f"P{((int(r['Mes_num'])-1)//4)+1} {int(r['Año_num'])}", axis=1)
+        elif periodo_comp == "Año":
+            df_comp["Grupo"] = df_comp["Año_num"].astype(str)
+        else:
+            df_comp["Grupo"] = df_comp.apply(
+                lambda r: f"{calendar.month_abbr[int(r['Mes_num'])]} {int(r['Año_num'])}", axis=1
+            )
+
+        df_agrup = (
+            df_comp.groupby("Grupo", sort=False)
+            .agg(Ventas=("Ventas","sum"), Gastos=("Gastos","sum"), Utilidad=("Utilidad","sum"),
+                 POS=("POS","sum"), Uber=("Uber","sum"), Rappi=("Rappi","sum"), _sort=("_sort","min"))
+            .reset_index()
+            .sort_values("_sort")
+            .drop(columns=["_sort"])
+        )
+
+        if PLOTLY_OK:
+            fig_comp = go.Figure()
+            fig_comp.add_trace(go.Bar(name="Ventas",   x=df_agrup["Grupo"], y=df_agrup["Ventas"],   marker_color="#48B065"))
+            fig_comp.add_trace(go.Bar(name="Gastos",   x=df_agrup["Grupo"], y=df_agrup["Gastos"],   marker_color="#E24B4A"))
+            fig_comp.add_trace(go.Bar(name="Utilidad", x=df_agrup["Grupo"], y=df_agrup["Utilidad"], marker_color="#4A90D9"))
+            fig_comp.update_layout(barmode="group", title="Ventas vs Gastos vs Utilidad", height=400,
+                                    legend=dict(orientation="h", yanchor="bottom", y=1.02))
+            st.plotly_chart(fig_comp, use_container_width=True)
+
+            st.subheader("🥧 Canales de venta por período")
+            fig_can = go.Figure()
+            fig_can.add_trace(go.Bar(name="POS",      x=df_agrup["Grupo"], y=df_agrup["POS"],   marker_color="#48B065"))
+            fig_can.add_trace(go.Bar(name="Uber Eats",x=df_agrup["Grupo"], y=df_agrup["Uber"],  marker_color="#EF9F27"))
+            fig_can.add_trace(go.Bar(name="Rappi",    x=df_agrup["Grupo"], y=df_agrup["Rappi"], marker_color="#E24B4A"))
+            fig_can.update_layout(barmode="stack", title="Mix de canales", height=350,
+                                   legend=dict(orientation="h", yanchor="bottom", y=1.02))
+            st.plotly_chart(fig_can, use_container_width=True)
+        else:
+            st.bar_chart(df_agrup.set_index("Grupo")[["Ventas","Gastos","Utilidad"]])
+
+        st.subheader("📋 Tabla de datos")
+        st.dataframe(df_agrup, hide_index=True, use_container_width=True)
+
+    # ── TAB 2: PROYECCIONES ───────────────────────────────────
+    with tab_proy:
+        st.subheader("🔮 Proyecciones de Ventas")
+
+        hoy_pr        = ahora_hermosillo().date()
+        dias_en_mes_pr = calendar.monthrange(hoy_pr.year, hoy_pr.month)[1]
+
+        df_vf_mes_pr = df_vf[
+            (df_vf["Mes"].apply(limpiar_valor) == hoy_pr.month) &
+            (df_vf["Año"].apply(limpiar_valor) == hoy_pr.year)
+        ].copy()
+
+        venta_acum_pr    = df_vf_mes_pr["Venta_Diaria"].sum() if not df_vf_mes_pr.empty else 0.0
+        dias_con_v_pr    = int((df_vf_mes_pr["Venta_Diaria"] > 0).sum()) if not df_vf_mes_pr.empty else 0
+        dias_restantes_pr = dias_en_mes_pr - hoy_pr.day
+        avg_diario_pr    = venta_acum_pr / dias_con_v_pr if dias_con_v_pr > 0 else 0.0
+        proyeccion_cierre = venta_acum_pr + (avg_diario_pr * dias_restantes_pr)
+
+        meta_pr = 145000.0
+        if not df_vf_mes_pr.empty and "Meta_Mensual" in df_vf_mes_pr.columns:
+            meta_pr = limpiar_valor(df_vf_mes_pr["Meta_Mensual"].iloc[-1]) or meta_pr
+        if not df_pptof.empty:
+            ppto_mes_pr = df_pptof[
+                (df_pptof["Mes"].apply(limpiar_valor) == hoy_pr.month) &
+                (df_pptof["Año"].apply(limpiar_valor) == hoy_pr.year)
+            ]
+            if not ppto_mes_pr.empty:
+                meta_ppto_pr = limpiar_valor(ppto_mes_pr["Meta_Total"].iloc[-1])
+                if meta_ppto_pr > 0:
+                    meta_pr = meta_ppto_pr
+
+        cumpl_actual_pr   = min((venta_acum_pr   / meta_pr * 100), 150) if meta_pr > 0 else 0.0
+        cumpl_proy_pr     = min((proyeccion_cierre / meta_pr * 100), 150) if meta_pr > 0 else 0.0
+
+        st.subheader(f"📅 {calendar.month_name[hoy_pr.month].capitalize()} {hoy_pr.year}")
+        pm1, pm2, pm3 = st.columns(3)
+        pm1.metric("Venta acumulada",    f"${venta_acum_pr:,.2f}")
+        pm2.metric("Promedio diario",    f"${avg_diario_pr:,.2f}", f"({dias_con_v_pr} días con venta)")
+        pm3.metric("Proyección cierre",  f"${proyeccion_cierre:,.2f}",
+                    f"Meta: ${meta_pr:,.0f}", delta_color="normal" if proyeccion_cierre >= meta_pr else "inverse")
+
+        if PLOTLY_OK:
+            gc1, gc2 = st.columns(2)
+            with gc1:
+                _gauge(cumpl_actual_pr, 0, 150, "Cumplimiento actual del mes", sufijo="%")
+            with gc2:
+                _gauge(cumpl_proy_pr, 0, 150, "Cumplimiento proyectado al cierre", sufijo="%")
+        else:
+            cc1, cc2 = st.columns(2)
+            cc1.metric("Cumplimiento actual",    f"{cumpl_actual_pr:.1f}%")
+            cc2.metric("Cumplimiento proyectado", f"{cumpl_proy_pr:.1f}%")
+
+        st.divider()
+        st.subheader("📈 Tendencia histórica + proyección")
+        meses_proy = st.slider("Meses a proyectar hacia adelante:", 1, 12, 6)
+        df_trend = _proyectar_tendencia(df_vf, meses_futuros=meses_proy)
+
+        if not df_trend.empty and PLOTLY_OK:
+            df_real_tr = df_trend[df_trend["tipo"] == "real"].copy()
+            df_proy_tr = df_trend[df_trend["tipo"] == "proyección"].copy()
+
+            def _etq(row):
+                try:
+                    return f"{calendar.month_abbr[int(row['Mes_num'])]} {int(row['Año_num'])}"
+                except Exception:
+                    return ""
+
+            df_real_tr["Etiqueta"] = df_real_tr.apply(_etq, axis=1)
+            df_proy_tr["Etiqueta"] = df_proy_tr.apply(_etq, axis=1)
+
+            fig_trend = go.Figure()
+            fig_trend.add_trace(go.Scatter(
+                x=df_real_tr["Etiqueta"], y=df_real_tr["Venta_Diaria"],
+                mode="lines+markers", name="Ventas reales",
+                line=dict(color="#48B065", width=2), marker=dict(size=7)
+            ))
+            fig_trend.add_trace(go.Scatter(
+                x=df_proy_tr["Etiqueta"], y=df_proy_tr["Venta_Diaria"],
+                mode="lines+markers", name="Proyección",
+                line=dict(color="#EF9F27", width=2, dash="dot"), marker=dict(size=7, symbol="diamond")
+            ))
+
+            if not df_pptof.empty:
+                ppto_labels_tr, ppto_vals_tr = [], []
+                for _, rtr in df_real_tr.iterrows():
+                    m_tr = int(rtr["Mes_num"]); a_tr = int(rtr["Año_num"])
+                    m_p  = df_pptof[(df_pptof["Mes"].apply(limpiar_valor)==m_tr) & (df_pptof["Año"].apply(limpiar_valor)==a_tr)]
+                    if not m_p.empty:
+                        ppto_labels_tr.append(rtr["Etiqueta"])
+                        ppto_vals_tr.append(limpiar_valor(m_p["Meta_Total"].iloc[-1]))
+                if ppto_labels_tr:
+                    fig_trend.add_trace(go.Scatter(
+                        x=ppto_labels_tr, y=ppto_vals_tr,
+                        mode="lines", name="Presupuesto",
+                        line=dict(color="#E24B4A", width=1.5, dash="dash")
+                    ))
+
+            fig_trend.update_layout(
+                height=420, title="Tendencia mensual + proyección",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02)
+            )
+            st.plotly_chart(fig_trend, use_container_width=True)
+        elif not df_trend.empty:
+            df_real_tr = df_trend[df_trend["tipo"]=="real"][["Año_num","Mes_num","Venta_Diaria"]].copy()
+            df_real_tr["label"] = df_real_tr.apply(
+                lambda r: f"{calendar.month_abbr[int(r['Mes_num'])]} {int(r['Año_num'])}", axis=1
+            )
+            st.line_chart(data=df_real_tr.set_index("label")["Venta_Diaria"])
+
+        st.divider()
+        st.subheader(f"📊 Cumplimiento anual vs presupuesto — {hoy_pr.year}")
+        venta_anual_pr = df_vf[df_vf["Año"].apply(limpiar_valor) == hoy_pr.year]["Venta_Diaria"].sum()
+        ppto_anual_pr  = 0.0
+        if not df_pptof.empty:
+            ppto_año_pr = df_pptof[df_pptof["Año"].apply(limpiar_valor) == hoy_pr.year]
+            if not ppto_año_pr.empty:
+                ppto_anual_pr = ppto_año_pr["Meta_Total"].apply(limpiar_valor).sum()
+
+        if ppto_anual_pr > 0:
+            cumpl_anual_pr = min(venta_anual_pr / ppto_anual_pr * 100, 150)
+            if PLOTLY_OK:
+                _gauge(cumpl_anual_pr, 0, 150, f"Cumplimiento Presupuesto Anual {hoy_pr.year}", sufijo="%")
+            ga1, ga2 = st.columns(2)
+            ga1.metric("Venta anual acumulada", f"${venta_anual_pr:,.2f}")
+            ga2.metric("Presupuesto anual",     f"${ppto_anual_pr:,.2f}")
+        else:
+            st.info("Configura el presupuesto anual en '📋 Presupuesto Anual' para ver el velocímetro anual.")
+
+    # ── TAB 3: FOOD COST & MARGEN ─────────────────────────────
+    with tab_fc:
+        st.subheader("🍽️ Food Cost & Margen por Producto")
+        if df_bcf.empty:
+            st.info("Sin datos en Costos de Insumos. Ve a '🧾 Base de Costos' para registrar tus costos.")
+        else:
+            df_rec_fc = cargar_recetas()
+            if not df_rec_fc.empty:
+                df_por_prod = (
+                    df_rec_fc.groupby("Receta")
+                    .agg(
+                        Costo_Receta=("Costo_Ingrediente", "sum"),
+                        Precio_Venta=("Precio_Venta", "max"),
+                    )
+                    .reset_index()
+                )
+                df_por_prod["Food_Cost_Pct"] = df_por_prod.apply(
+                    lambda r: round(r["Costo_Receta"]/r["Precio_Venta"]*100, 1) if r["Precio_Venta"] > 0 else 0.0, axis=1
+                )
+                df_por_prod["Margen_Bruto"] = df_por_prod["Precio_Venta"] - df_por_prod["Costo_Receta"]
+                df_por_prod["Margen_Pct"]   = df_por_prod.apply(
+                    lambda r: round(r["Margen_Bruto"]/r["Precio_Venta"]*100, 1) if r["Precio_Venta"] > 0 else 0.0, axis=1
+                )
+                st.success("Datos tomados de recetas registradas.")
+                df_por_prod.rename(columns={"Receta":"Producto"}, inplace=True)
+            else:
+                df_bcf_s = df_bcf.copy()
+                df_bcf_s["Fecha_Captura"] = pd.to_datetime(df_bcf_s["Fecha_Captura"], errors="coerce")
+                df_bcf_latest = (
+                    df_bcf_s.sort_values("Fecha_Captura")
+                    .drop_duplicates(subset=["Nombre_Insumo"], keep="last")
+                )
+                df_por_prod = df_bcf_latest[["Nombre_Insumo"]].copy()
+                df_por_prod["Producto"] = df_por_prod["Nombre_Insumo"]
+                df_por_prod["Costo_Receta"] = df_bcf_latest["Costo_Presentacion"]
+                df_por_prod["Precio_Venta"] = df_bcf_latest["Costo_Presentacion"] * 2
+                df_por_prod["Food_Cost_Pct"] = 50.0
+                df_por_prod["Margen_Bruto"] = df_por_prod["Precio_Venta"] - df_por_prod["Costo_Receta"]
+                df_por_prod["Margen_Pct"] = 50.0
+                st.info("No hay recetas aún. Mostrando costos de insumos con precio estimado.")
+
+            fc_prom_tab = df_por_prod["Food_Cost_Pct"].mean()
+            margen_prom_tab = df_por_prod["Margen_Pct"].mean()
+            tf1, tf2, tf3 = st.columns(3)
+            tf1.metric("Food Cost Promedio", f"{fc_prom_tab:.1f}%",
+                        delta="Alto" if fc_prom_tab > 35 else ("Aceptable" if fc_prom_tab > 25 else "Óptimo"),
+                        delta_color="inverse" if fc_prom_tab > 35 else ("off" if fc_prom_tab > 25 else "normal"))
+            tf2.metric("Margen Bruto Promedio", f"{margen_prom_tab:.1f}%")
+            tf3.metric("Productos en base", len(df_por_prod))
+
+            if PLOTLY_OK:
+                colores_fc_tab = [
+                    "#E24B4A" if fc > 35 else ("#EF9F27" if fc > 25 else "#48B065")
+                    for fc in df_por_prod["Food_Cost_Pct"]
+                ]
+                fig_fc_tab = go.Figure()
+                fig_fc_tab.add_trace(go.Bar(
+                    x=df_por_prod["Producto"], y=df_por_prod["Food_Cost_Pct"],
+                    marker_color=colores_fc_tab, name="Food Cost %"
+                ))
+                fig_fc_tab.add_hline(y=35, line_dash="dash", line_color="#E24B4A", annotation_text="Límite alto 35%")
+                fig_fc_tab.add_hline(y=25, line_dash="dash", line_color="#EF9F27", annotation_text="Óptimo 25%")
+                fig_fc_tab.update_layout(title="Food Cost % por Producto", height=380, yaxis_ticksuffix="%")
+                st.plotly_chart(fig_fc_tab, use_container_width=True)
+
+            st.subheader("📋 Detalle por producto")
+            def _color_fc_prod(row):
+                fc = limpiar_valor(row.get("Food_Cost_Pct", 0))
+                if fc > 35:   return ["background-color: rgba(226,75,74,0.2)"] * len(row)
+                elif fc > 25: return ["background-color: rgba(239,159,39,0.2)"] * len(row)
+                return ["background-color: rgba(80,200,120,0.15)"] * len(row)
+
+            st.dataframe(
+                df_por_prod.style.apply(_color_fc_prod, axis=1),
+                hide_index=True, use_container_width=True
+            )
+
+    # ── TAB 4: MERMA ──────────────────────────────────────────
+    with tab_merma_d:
+        st.subheader("📉 Análisis de Merma")
+        if df_mermaf.empty:
+            st.info("Sin registros de merma. Ve a '📉 Registrar Merma' para comenzar.")
+        else:
+            df_md = df_mermaf.copy()
+            df_md["Fecha"]     = pd.to_datetime(df_md["Fecha"], errors="coerce")
+            df_md["Mes_num"]   = df_md["Fecha"].dt.month
+            df_md["Año_num"]   = df_md["Fecha"].dt.year
+            df_md["Costo_Total"] = df_md["Costo_Total"].apply(limpiar_valor)
+
+            años_md   = sorted([int(a) for a in df_md["Año_num"].dropna().unique() if a > 0], reverse=True)
+            año_md    = st.selectbox("Año:", años_md if años_md else [ahora_hermosillo().year], key="año_md")
+            mes_md_op = st.selectbox("Mes:", ["Todos"] + [calendar.month_name[m].capitalize() for m in range(1,13)], key="mes_md")
+
+            df_md_fil = df_md[df_md["Año_num"] == año_md]
+            mes_md_num = None
+            if mes_md_op != "Todos":
+                mes_md_num = next((m for m in range(1,13) if calendar.month_name[m].capitalize() == mes_md_op), None)
+                if mes_md_num:
+                    df_md_fil = df_md_fil[df_md_fil["Mes_num"] == mes_md_num]
+
+            costo_merma_d = df_md_fil["Costo_Total"].sum()
+
+            ventas_periodo_md = df_vf[df_vf["Año"].apply(limpiar_valor) == año_md]["Venta_Diaria"].sum()
+            if mes_md_num:
+                ventas_periodo_md = df_vf[
+                    (df_vf["Año"].apply(limpiar_valor) == año_md) &
+                    (df_vf["Mes"].apply(limpiar_valor) == mes_md_num)
+                ]["Venta_Diaria"].sum()
+
+            pct_merma_d = (costo_merma_d / ventas_periodo_md * 100) if ventas_periodo_md > 0 else 0.0
+
+            mm1, mm2, mm3 = st.columns(3)
+            mm1.metric("Costo total de merma",   f"${costo_merma_d:,.2f}")
+            mm2.metric("Ventas del período",      f"${ventas_periodo_md:,.2f}")
+            mm3.metric("% Merma vs Ventas",       f"{pct_merma_d:.2f}%",
+                        delta_color="inverse" if pct_merma_d > 3 else "normal")
+
+            if PLOTLY_OK and not df_md_fil.empty:
+                cc_md1, cc_md2 = st.columns(2)
+                with cc_md1:
+                    df_by_ingr = (
+                        df_md_fil.groupby("Ingrediente")["Costo_Total"].sum()
+                        .reset_index().sort_values("Costo_Total", ascending=False).head(10)
+                    )
+                    if not df_by_ingr.empty:
+                        fig_ingr = px.bar(df_by_ingr, x="Costo_Total", y="Ingrediente", orientation="h",
+                                           title="Top 10 ingredientes con más merma ($)",
+                                           color_discrete_sequence=["#E24B4A"])
+                        fig_ingr.update_layout(height=380)
+                        st.plotly_chart(fig_ingr, use_container_width=True)
+                with cc_md2:
+                    df_by_mot = (
+                        df_md_fil.groupby("Motivo")["Costo_Total"].sum()
+                        .reset_index().sort_values("Costo_Total", ascending=False)
+                    )
+                    if not df_by_mot.empty:
+                        fig_mot = px.pie(df_by_mot, values="Costo_Total", names="Motivo",
+                                          title="Distribución por motivo de merma")
+                        fig_mot.update_layout(height=380)
+                        st.plotly_chart(fig_mot, use_container_width=True)
+
+            st.subheader("📋 Detalle de merma")
+            cols_md_show = ["Fecha","Producto","Ingrediente","Cantidad","Unidad_Medida","Motivo","Costo_Unitario","Costo_Total","Comentarios"]
+            cols_md_ok   = [c for c in cols_md_show if c in df_md_fil.columns]
+            st.dataframe(df_md_fil[cols_md_ok].sort_values("Fecha", ascending=False), hide_index=True, use_container_width=True)
+
+    # ── TAB 5: PUNTO DE EQUILIBRIO ────────────────────────────
+    with tab_pe:
+        st.subheader("⚖️ Punto de Equilibrio Mensual")
+
+        hoy_pe     = ahora_hermosillo().date()
+        años_pe_op = sorted(set([int(limpiar_valor(a)) for a in df_vf["Año"].unique() if limpiar_valor(a) > 0]), reverse=True)
+        if not años_pe_op:
+            años_pe_op = [hoy_pe.year]
+
+        col_pe1, col_pe2 = st.columns(2)
+        with col_pe1:
+            año_pe = st.selectbox("Año:", años_pe_op, key="año_pe")
+        with col_pe2:
+            mes_pe = st.selectbox("Mes:", list(range(1,13)), index=hoy_pe.month - 1,
+                                   format_func=lambda m: calendar.month_name[m].capitalize(), key="mes_pe")
+
+        gastos_fijos_pe = gastos_var_pe = 0.0
+        if not df_gf.empty and "Fecha" in df_gf.columns:
+            df_gpe = df_gf.copy()
+            df_gpe["_fecha"] = pd.to_datetime(df_gpe["Fecha"], errors="coerce")
+            df_gpe_mes = df_gpe[
+                (df_gpe["_fecha"].dt.month == mes_pe) &
+                (df_gpe["_fecha"].dt.year  == año_pe)
+            ]
+            gastos_fijos_pe = df_gpe_mes[df_gpe_mes["Tipo"]=="Fijo"]["Monto"].apply(limpiar_valor).sum()
+            gastos_var_pe   = df_gpe_mes[df_gpe_mes["Tipo"]=="Variable"]["Monto"].apply(limpiar_valor).sum()
+
+        ventas_pe = df_vf[
+            (df_vf["Mes"].apply(limpiar_valor) == mes_pe) &
+            (df_vf["Año"].apply(limpiar_valor) == año_pe)
+        ]["Venta_Diaria"].sum()
+
+        with st.expander("✏️ Ajuste manual de gastos (opcional — se usa si no hay datos en el módulo de Gastos)",
+                         expanded=(gastos_fijos_pe + gastos_var_pe == 0)):
+            col_gf_pe, col_gv_pe = st.columns(2)
+            with col_gf_pe:
+                gastos_fijos_pe = st.number_input("Gastos Fijos ($):", min_value=0.0, step=100.0,
+                                                   value=float(gastos_fijos_pe),
+                                                   help="Renta, nómina, servicios fijos, etc.")
+            with col_gv_pe:
+                gastos_var_pe = st.number_input("Gastos Variables ($):", min_value=0.0, step=100.0,
+                                                 value=float(gastos_var_pe),
+                                                 help="Insumos, empaques, comisiones, etc.")
+
+        gastos_tot_pe = gastos_fijos_pe + gastos_var_pe
+        ratio_var_pe  = (gastos_var_pe / ventas_pe) if ventas_pe > 0 else 0.0
+
+        pe_val = 0.0
+        pe_calculable = False
+        if gastos_fijos_pe > 0 and ventas_pe > 0 and ratio_var_pe < 1:
+            pe_val = gastos_fijos_pe / (1 - ratio_var_pe)
+            pe_calculable = True
+        elif gastos_fijos_pe > 0 and ventas_pe == 0:
+            pe_calculable = False
+
+        st.divider()
+
+        if pe_calculable:
+            st.markdown(f"""
+**Fórmula aplicada:** PE = Gastos Fijos ÷ (1 − Gastos Variables / Ventas)
+
+| Concepto | Valor |
+|---|---|
+| Gastos Fijos | **${gastos_fijos_pe:,.2f}** |
+| Gastos Variables | **${gastos_var_pe:,.2f}** |
+| Ventas del período | **${ventas_pe:,.2f}** |
+| Razón Costo Variable | **{ratio_var_pe*100:.1f}%** |
+| **Punto de Equilibrio** | **${pe_val:,.2f}** |
+            """)
+
+            utilidad_pe   = ventas_pe - gastos_tot_pe
+            cobertura_pe  = min((ventas_pe / pe_val * 100), 150) if pe_val > 0 else 0.0
+
+            pp1, pp2, pp3 = st.columns(3)
+            pp1.metric("Punto de Equilibrio",  f"${pe_val:,.2f}")
+            pp2.metric("Ventas del período",   f"${ventas_pe:,.2f}")
+            pp3.metric("Utilidad neta estimada", f"${utilidad_pe:,.2f}",
+                        delta_color="normal" if utilidad_pe >= 0 else "inverse")
+
+            if PLOTLY_OK:
+                _gauge(cobertura_pe, 0, 150,
+                       f"Cobertura del PE — {calendar.month_name[mes_pe].capitalize()} {año_pe}",
+                       sufijo="%", umbral_verde=100, umbral_amarillo=80)
+        elif gastos_fijos_pe > 0 and ratio_var_pe >= 1:
+            st.error("⚠️ Los gastos variables superan o igualan las ventas. El punto de equilibrio no es alcanzable con esta estructura de costos.")
+        else:
+            st.info("Ingresa los gastos del período para calcular el punto de equilibrio. Si ya registraste gastos en el módulo de Gastos, selecciona el mes y año correspondientes.")
+
+        st.divider()
+        st.subheader(f"📊 Cumplimiento anual vs presupuesto — {año_pe}")
+        venta_anual_pe = df_vf[df_vf["Año"].apply(limpiar_valor) == año_pe]["Venta_Diaria"].sum()
+        ppto_anual_pe  = 0.0
+        if not df_pptof.empty:
+            ppto_pe_data = df_pptof[df_pptof["Año"].apply(limpiar_valor) == año_pe]
+            if not ppto_pe_data.empty:
+                ppto_anual_pe = ppto_pe_data["Meta_Total"].apply(limpiar_valor).sum()
+
+        if ppto_anual_pe > 0:
+            cumpl_anual_pe = min(venta_anual_pe / ppto_anual_pe * 100, 150)
+            if PLOTLY_OK:
+                _gauge(cumpl_anual_pe, 0, 150, f"Cumplimiento Presupuesto Anual {año_pe}", sufijo="%")
+            pa1, pa2 = st.columns(2)
+            pa1.metric("Venta anual acumulada", f"${venta_anual_pe:,.2f}")
+            pa2.metric("Presupuesto anual",     f"${ppto_anual_pe:,.2f}")
+        else:
+            st.info("Configura el presupuesto anual en '📋 Presupuesto Anual' para ver el velocímetro de cumplimiento anual.")
+
+        if not df_gf.empty:
+            st.divider()
+            st.subheader("📋 Detalle de gastos del período seleccionado")
+            df_gf2 = df_gf.copy()
+            df_gf2["_fecha"] = pd.to_datetime(df_gf2["Fecha"], errors="coerce")
+            df_gf2_fil = df_gf2[
+                (df_gf2["_fecha"].dt.month == mes_pe) &
+                (df_gf2["_fecha"].dt.year  == año_pe)
+            ]
+            if not df_gf2_fil.empty:
+                cols_gf2 = ["Fecha","Tipo","Categoria","Concepto","Monto","Responsable"]
+                cols_gf2_ok = [c for c in cols_gf2 if c in df_gf2_fil.columns]
+                st.dataframe(df_gf2_fil[cols_gf2_ok].sort_values("Tipo"), hide_index=True, use_container_width=True)
+            else:
+                st.info("Sin gastos registrados para este período en el módulo de Gastos.")
+
+    # ── TAB 6: CANALES ADICIONALES ────────────────────────────
+    with tab_canales:
+        st.subheader("🛒 Canales de Venta Adicionales")
+        if df_cfg_canales.empty:
+            st.info("No hay canales configurados. Usa la página 'Canales de Venta' para crear tus canales adicionales.")
+        else:
+            canales_data = {}
+            for _, canal_row in df_cfg_canales.iterrows():
+                cn = canal_row["Canal"]
+                ws_cn, _ = safe_worksheet(sh, cn)
+                if ws_cn:
+                    data = ws_cn.get_all_values()
+                    if len(data) > 1:
+                        df_cn = pd.DataFrame(data[1:], columns=data[0])
+                        df_cn["Monto"] = df_cn["Monto"].apply(limpiar_valor)
+                        df_cn["Fecha"] = pd.to_datetime(df_cn["Fecha"], errors="coerce")
+                        canales_data[cn] = df_cn
+            if not canales_data:
+                st.info("Aún no hay eventos registrados en los canales.")
+            else:
+                acum_can = []
+                total_general = 0.0
+                for cn, df_cn in canales_data.items():
+                    total_cn = df_cn["Monto"].sum()
+                    acum_can.append({"Canal": cn, "Total": total_cn, "Eventos": len(df_cn)})
+                    total_general += total_cn
+                df_acum = pd.DataFrame(acum_can)
+                st.subheader("Totales por canal")
+                st.dataframe(df_acum, hide_index=True, use_container_width=True)
+                st.metric("Total General Canales Adicionales", f"${total_general:,.2f}")
+
+                if PLOTLY_OK:
+                    fig_can_adic = px.bar(df_acum, x="Canal", y="Total", title="Ventas por Canal Adicional", color="Total")
+                    st.plotly_chart(fig_can_adic, use_container_width=True)
+
+                st.subheader("Ventas mensuales de canales adicionales")
+                df_all_ev = pd.concat(canales_data.values(), ignore_index=True)
+                df_all_ev["Mes"] = df_all_ev["Fecha"].dt.month
+                df_all_ev["Año"] = df_all_ev["Fecha"].dt.year
+                ventas_mens_can = df_all_ev.groupby(["Año","Mes"])["Monto"].sum().reset_index()
+                ventas_mens_can = ventas_mens_can.sort_values(["Año","Mes"])
+                ventas_mens_can["label"] = ventas_mens_can.apply(
+                    lambda r: f"{calendar.month_abbr[int(r['Mes'])]} {int(r['Año'])}", axis=1
+                )
+                st.bar_chart(ventas_mens_can.set_index("label")["Monto"])
