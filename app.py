@@ -2,7 +2,7 @@ import streamlit as st
 from google.oauth2.service_account import Credentials
 import gspread
 import pandas as pd
-from datetime import datetime, timezone, timedelta, date as _date
+from datetime import datetime, date as _date
 import time
 import calendar
 import unicodedata
@@ -64,7 +64,7 @@ COLS_HISTORIAL = [
     "Responsable", "Fecha de Inventario", "Tara", "Observaciones",
 ]
 COLS_ACCESOS = ["Clave", "Nombre", "Rol"]
-COLS_AVISOS  = ["ID", "Título", "Mensaje", "Tipo", "Activo", "Fecha", "Autor"]
+COLS_AVISOS  = ["ID", "Título", "Mensaje", "Tipo", "Activo", "Fecha", "Autor", "Pagina"]
 COLS_VENTAS  = [
     "Unidad", "Fecha", "Día", "Mes", "Año",
     "Efectivo", "Transferencias", "Tarjeta", "Total_POS",
@@ -114,18 +114,16 @@ UNIDADES_MED = ["pz", "ml", "gr", "kg", "lt"]
 SPREADSHEET_ID = "1VZV81p-JqoaRPzMzsRurF6wntVefyaN5ozs3RJe6uJs"
 
 # ============================================================
-# ZONA HORARIA — Hermosillo MST UTC-7
+# FECHA Y HORA (local de la PC)
 # ============================================================
-TZ_HERMOSILLO = timezone(timedelta(hours=-7))
+def ahora_local() -> datetime:
+    return datetime.now()
 
-def ahora_hermosillo() -> datetime:
-    return datetime.now(tz=TZ_HERMOSILLO)
+def ts_local() -> str:
+    return ahora_local().strftime("%Y-%m-%d %H:%M:%S")
 
-def ts_hermosillo() -> str:
-    return ahora_hermosillo().strftime("%Y-%m-%d %H:%M:%S")
-
-def fmt_fecha_hmo(dt) -> str:
-    if dt is None or (hasattr(dt, 'isnull') and dt.isnull()):
+def fmt_fecha(dt) -> str:
+    if dt is None:
         return ""
     try:
         import pandas as pd
@@ -134,12 +132,9 @@ def fmt_fecha_hmo(dt) -> str:
     except Exception:
         pass
     try:
-        if hasattr(dt, 'tzinfo') and dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        dt_hmo = dt.astimezone(TZ_HERMOSILLO)
-        return dt_hmo.strftime("%d/%m/%Y %H:%M")
+        return dt.strftime("%d/%m/%Y %H:%M")
     except Exception:
-        return str(dt)[:16]
+        return str(dt)
 
 # ============================================================
 # HELPERS UTILITARIOS
@@ -279,52 +274,59 @@ sh = conectar_google_sheets()
 # ============================================================
 # MIGRACIÓN DE ESQUEMA
 # ============================================================
-def _migrar_encabezado_tara():
-    if sh is None or st.session_state.get("_tara_migrada", False):
+def _migrar_encabezados():
+    if sh is None:
         return
-    IDX_TARA_HIS = COLS_HISTORIAL.index("Tara")
-    col_his = chr(ord("A") + IDX_TARA_HIS)
-    for hoja in ("Historial", "Cierres"):
-        ws, err = safe_worksheet(sh, hoja)
-        if ws is None:
-            continue
-        try:
-            if "Tara" not in ws.row_values(1):
-                ws.update(range_name=f"{col_his}1", values=[["Tara"]])
-        except Exception:
-            pass
-    IDX_TARA_INS = COLS_INSUMOS.index("Tara")
-    col_ins = chr(ord("A") + IDX_TARA_INS)
-    ws_ins, _ = safe_worksheet(sh, "Insumos")
-    if ws_ins is not None:
-        try:
-            if "Tara" not in ws_ins.row_values(1):
-                ws_ins.update(range_name=f"{col_ins}1", values=[["Tara"]])
-        except Exception:
-            pass
-    IDX_ACTIVO_INS = COLS_INSUMOS.index("Activo")
-    col_activo = chr(ord("A") + IDX_ACTIVO_INS)
-    if ws_ins is not None:
-        try:
-            encabezados_actuales = ws_ins.row_values(1)
-            if "Activo" not in encabezados_actuales:
-                ws_ins.update(range_name=f"{col_activo}1", values=[["Activo"]])
-                todos_los_valores = ws_ins.get_all_values()
-                num_filas = len(todos_los_valores)
-                if num_filas > 1:
-                    celdas_a_rellenar = []
-                    for fila_idx in range(2, num_filas + 1):
-                        fila_datos = todos_los_valores[fila_idx - 1]
-                        val_activo = fila_datos[IDX_ACTIVO_INS] if len(fila_datos) > IDX_ACTIVO_INS else ""
-                        if str(val_activo).strip() == "":
-                            celdas_a_rellenar.append([f"{col_activo}{fila_idx}", "TRUE"])
-                    for celda_ref, val in celdas_a_rellenar:
-                        ws_ins.update(range_name=celda_ref, values=[[val]])
-        except Exception:
-            pass
-    st.session_state["_tara_migrada"] = True
+    # Tara
+    if not st.session_state.get("_tara_migrada", False):
+        IDX_TARA_HIS = COLS_HISTORIAL.index("Tara")
+        col_his = chr(ord("A") + IDX_TARA_HIS)
+        for hoja in ("Historial", "Cierres"):
+            ws, err = safe_worksheet(sh, hoja)
+            if ws is None: continue
+            try:
+                if "Tara" not in ws.row_values(1):
+                    ws.update(range_name=f"{col_his}1", values=[["Tara"]])
+            except Exception: pass
+        IDX_TARA_INS = COLS_INSUMOS.index("Tara")
+        col_ins = chr(ord("A") + IDX_TARA_INS)
+        ws_ins, _ = safe_worksheet(sh, "Insumos")
+        if ws_ins is not None:
+            try:
+                if "Tara" not in ws_ins.row_values(1):
+                    ws_ins.update(range_name=f"{col_ins}1", values=[["Tara"]])
+            except Exception: pass
+        IDX_ACTIVO_INS = COLS_INSUMOS.index("Activo")
+        col_activo = chr(ord("A") + IDX_ACTIVO_INS)
+        if ws_ins is not None:
+            try:
+                encabezados_actuales = ws_ins.row_values(1)
+                if "Activo" not in encabezados_actuales:
+                    ws_ins.update(range_name=f"{col_activo}1", values=[["Activo"]])
+                    todos_los_valores = ws_ins.get_all_values()
+                    num_filas = len(todos_los_valores)
+                    if num_filas > 1:
+                        celdas_a_rellenar = [[f"{col_activo}{i}", "TRUE"] for i in range(2, num_filas+1) if str(todos_los_valores[i-1][IDX_ACTIVO_INS] if len(todos_los_valores[i-1]) > IDX_ACTIVO_INS else "").strip() == ""]
+                        for celda_ref, val in celdas_a_rellenar:
+                            ws_ins.update(range_name=celda_ref, values=[[val]])
+            except Exception: pass
+        st.session_state["_tara_migrada"] = True
+    # Pagina en Avisos
+    if not st.session_state.get("_avisos_pagina_migrada", False):
+        ws_av, err = safe_worksheet(sh, "Avisos")
+        if ws_av is not None:
+            try:
+                if "Pagina" not in ws_av.row_values(1):
+                    idx = len(COLS_AVISOS) - 1
+                    ws_av.update(range_name=f"{chr(ord('A')+idx)}1", values=[["Pagina"]])
+                    # actualizar existentes a "Todas"
+                    todos = ws_av.get_all_values()
+                    for i in range(2, len(todos)+1):
+                        ws_av.update(range_name=f"{chr(ord('A')+idx)}{i}", values=[["Todas"]])
+            except Exception: pass
+        st.session_state["_avisos_pagina_migrada"] = True
 
-_migrar_encabezado_tara()
+_migrar_encabezados()
 
 # ============================================================
 # CARGA DE DATOS — INVENTARIO
@@ -335,87 +337,60 @@ def cargar_datos_integrales():
         return pd.DataFrame(), pd.DataFrame()
     try:
         ws_ins, err_ins = safe_worksheet(sh, "Insumos")
-        if err_ins:
-            st.warning(err_ins)
-            return pd.DataFrame(), pd.DataFrame()
+        if err_ins: return pd.DataFrame(), pd.DataFrame()
         ws_his, err_his = safe_worksheet(sh, "Historial")
-        if err_his:
-            st.warning(err_his)
-            return pd.DataFrame(), pd.DataFrame()
+        if err_his: return pd.DataFrame(), pd.DataFrame()
         val_ins = ws_ins.get_all_values()
         val_his = ws_his.get_all_values()
         ws_cie, _ = safe_worksheet(sh, "Cierres")
         val_cie   = ws_cie.get_all_values() if ws_cie else []
-
         def _to_df(vals):
             if len(vals) > 1:
                 return pd.DataFrame(vals[1:], columns=vals[0])
             return pd.DataFrame(columns=vals[0] if vals else [])
-
         df_ins = _to_df(val_ins)
         df_his = _to_df(val_his)
         df_cie = _to_df(val_cie) if val_cie else pd.DataFrame()
-
         df_ins["Sheet_Row_Num"] = df_ins.index + 2
-        df_ins = normalizar_dataframe(df_ins, COLS_INSUMOS + ["Sheet_Row_Num"],
-                                      cols_criticas=COLS_CRITICAS_INSUMOS)
-
+        df_ins = normalizar_dataframe(df_ins, COLS_INSUMOS + ["Sheet_Row_Num"], cols_criticas=COLS_CRITICAS_INSUMOS)
         if "Activo" in df_ins.columns:
-            df_ins_activos = df_ins[
-                df_ins["Activo"].astype(str).str.strip().str.upper() == "TRUE"
-            ].copy()
+            df_ins_activos = df_ins[df_ins["Activo"].astype(str).str.strip().str.upper() == "TRUE"].copy()
         else:
             df_ins_activos = df_ins.copy()
-
-        df_his = normalizar_dataframe(df_his, COLS_HISTORIAL,
-                                      cols_criticas=COLS_CRITICAS_HISTORIAL)
-
+        df_his = normalizar_dataframe(df_his, COLS_HISTORIAL, cols_criticas=COLS_CRITICAS_HISTORIAL)
         if not df_cie.empty:
-            df_cie   = normalizar_dataframe(df_cie, COLS_HISTORIAL)
+            df_cie = normalizar_dataframe(df_cie, COLS_HISTORIAL)
             df_total = pd.concat([df_cie, df_his], ignore_index=True)
         else:
             df_total = df_his
-
         if not df_total.empty:
             df_total["Fecha de Inventario"] = pd.to_datetime(df_total["Fecha de Inventario"], errors="coerce")
             df_total["Fecha de Entrada"]    = pd.to_datetime(df_total["Fecha de Entrada"], errors="coerce")
-
             if not df_ins_activos.empty:
                 df_ins_m = df_ins_activos.copy()
             elif not df_ins.empty:
                 df_ins_m = df_ins.copy()
             else:
                 df_ins_m = pd.DataFrame()
-
             if not df_ins_m.empty:
                 df_ins_m["_nom_norm"] = df_ins_m["Nombre del Insumo"].apply(normalizar_nombre)
                 df_ins_m["_clave"]   = df_ins_m["Unidad de Negocio"].fillna("") + "||" + df_ins_m["_nom_norm"]
-                COLS_ESTATICAS = ["_clave","Nombre del Insumo","Marca","Proveedor","Grupo",
-                                  "Presentación de Compra","Unidad de Medida","Stock Mínimo","Tara"]
+                COLS_ESTATICAS = ["_clave","Nombre del Insumo","Marca","Proveedor","Grupo","Presentación de Compra","Unidad de Medida","Stock Mínimo","Tara"]
                 df_ins_m = df_ins_m[[c for c in COLS_ESTATICAS if c in df_ins_m.columns]].copy()
                 df_ins_m["Stock Mínimo"] = df_ins_m["Stock Mínimo"].apply(limpiar_valor)
                 df_ins_m["Tara"] = df_ins_m["Tara"].apply(limpiar_valor) if "Tara" in df_ins_m.columns else 0.0
                 df_ins_m = df_ins_m.drop_duplicates(subset=["_clave"], keep="last")
-
                 df_total["_nom_norm"] = df_total["Nombre del Insumo"].apply(normalizar_nombre)
                 df_total["_clave"]   = df_total["Unidad de Negocio"].fillna("") + "||" + df_total["_nom_norm"]
-
-                COLS_CIFRAS = ["_clave","Unidad de Negocio","Alm","Barra","Stock Neto","¿Comprar?",
-                               "Responsable","Fecha de Inventario","Fecha de Entrada","Tara","Observaciones"]
+                COLS_CIFRAS = ["_clave","Unidad de Negocio","Alm","Barra","Stock Neto","¿Comprar?","Responsable","Fecha de Inventario","Fecha de Entrada","Tara","Observaciones"]
                 cols_cifras_ok = [c for c in COLS_CIFRAS if c in df_total.columns]
                 df_cifras = df_total[cols_cifras_ok].copy()
                 df_total  = df_cifras.merge(df_ins_m, on="_clave", how="left", suffixes=("_hist","_cat"))
-
                 tara_hist = df_total.get("Tara_hist", pd.Series(0.0, index=df_total.index))
                 tara_cat  = df_total.get("Tara_cat",  df_total.get("Tara", pd.Series(0.0, index=df_total.index)))
-                df_total["Tara"] = tara_hist.apply(limpiar_valor).where(
-                    tara_hist.apply(limpiar_valor) > 0, tara_cat.apply(limpiar_valor)
-                )
-                df_total.drop(columns=["Tara_hist","Tara_cat","_clave","_nom_norm"],
-                              inplace=True, errors="ignore")
-
+                df_total["Tara"] = tara_hist.apply(limpiar_valor).where(tara_hist.apply(limpiar_valor) > 0, tara_cat.apply(limpiar_valor))
+                df_total.drop(columns=["Tara_hist","Tara_cat","_clave","_nom_norm"], inplace=True, errors="ignore")
         return df_ins_activos, df_total
-
     except Exception as e:
         st.error(f"Falla en extracción de datos: {e}")
         return pd.DataFrame(), pd.DataFrame()
@@ -540,7 +515,7 @@ def cargar_presupuesto():
         return pd.DataFrame(columns=COLS_PRESUPUESTO)
 
 # ============================================================
-# CARGA DE DATOS — BASE DE COSTOS
+# CARGA DE DATOS — BASE DE COSTOS (legacy)
 # ============================================================
 @st.cache_data(ttl=30)
 def cargar_base_costos():
@@ -568,7 +543,7 @@ def cargar_base_costos():
 # ============================================================
 # NUEVAS CARGAS
 # ============================================================
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=60)
 def cargar_costos_insumos():
     if sh is None:
         return pd.DataFrame(columns=COLS_COSTOS_INSUMOS)
@@ -591,7 +566,7 @@ def cargar_costos_insumos():
         st.warning(f"Error cargando costos insumos: {e}")
         return pd.DataFrame(columns=COLS_COSTOS_INSUMOS)
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=60)
 def cargar_recetas():
     if sh is None:
         return pd.DataFrame(columns=COLS_RECETAS)
@@ -697,7 +672,7 @@ def cargar_merma():
         return pd.DataFrame(columns=COLS_MERMA)
 
 # ============================================================
-# SISTEMA DE AVISOS
+# SISTEMA DE AVISOS (versión por página)
 # ============================================================
 @st.cache_data(ttl=30)
 def cargar_avisos():
@@ -718,11 +693,17 @@ def cargar_avisos():
     except Exception:
         return pd.DataFrame()
 
-def mostrar_avisos():
+def mostrar_avisos(pagina: str):
     df_av = cargar_avisos()
     if df_av.empty:
         return
     activos = df_av[df_av["Activo"].astype(str).str.upper() == "TRUE"]
+    if activos.empty:
+        return
+    if "Pagina" in activos.columns:
+        activos = activos[(activos["Pagina"] == pagina) | (activos["Pagina"].astype(str).str.strip() == "Todas")]
+    else:
+        pass
     if activos.empty:
         return
     ICONOS = {"info":"ℹ️","warning":"⚠️","urgent":"🚨"}
@@ -734,7 +715,7 @@ def mostrar_avisos():
         )
 
 # ============================================================
-# LÓGICA DE NEGOCIO — INVENTARIO
+# LÓGICA DE NEGOCIO — INVENTARIO (sin cambios funcionales)
 # ============================================================
 def obtener_ultimo_inventario(df_hist: pd.DataFrame, unidad: str = None) -> pd.DataFrame:
     if df_hist.empty:
@@ -767,7 +748,7 @@ def fecha_max_segura(serie: pd.Series) -> str:
     validas = serie.dropna()
     if validas.empty:
         return "Sin registros"
-    return fmt_fecha_hmo(validas.max())
+    return fmt_fecha(validas.max())
 
 def buscar_insumo_en_actual(df_actual: pd.DataFrame, nombre: str) -> pd.Series:
     if df_actual.empty:
@@ -835,7 +816,7 @@ def _construir_fila_venta(
     ]
 
 # ============================================================
-# LÓGICA DE NEGOCIO — FINANZAS (nuevas hojas)
+# LÓGICA DE NEGOCIO — FINANZAS (hojas)
 # ============================================================
 def _asegurar_hoja_gastos():
     ws, err = safe_worksheet(sh, "Gastos")
@@ -871,7 +852,6 @@ def _asegurar_hoja_costos_insumos():
     return ws, None
 
 def _asegurar_hoja_recetas():
-    # Intentar obtener la hoja directamente sin pasar por safe_worksheet que retorna error si no existe
     try:
         return sh.worksheet("Recetas"), None
     except gspread.exceptions.WorksheetNotFound:
@@ -951,13 +931,7 @@ def _proyectar_tendencia(df_ventas: pd.DataFrame, meses_futuros: int = 6) -> pd.
     df_v2["Mes_num"] = df_v2["Mes"].apply(limpiar_valor).astype(int)
     df_v2["Año_num"] = df_v2["Año"].apply(limpiar_valor).astype(int)
     df_v2 = df_v2[(df_v2["Mes_num"] > 0) & (df_v2["Año_num"] > 0)]
-    df_mensual = (
-        df_v2.groupby(["Año_num","Mes_num"])["Venta_Diaria"]
-        .sum()
-        .reset_index()
-        .sort_values(["Año_num","Mes_num"])
-        .reset_index(drop=True)
-    )
+    df_mensual = df_v2.groupby(["Año_num","Mes_num"])["Venta_Diaria"].sum().reset_index().sort_values(["Año_num","Mes_num"]).reset_index(drop=True)
     df_mensual["idx"] = range(len(df_mensual))
     df_mensual["tipo"] = "real"
     if len(df_mensual) < 2:
@@ -966,9 +940,9 @@ def _proyectar_tendencia(df_ventas: pd.DataFrame, meses_futuros: int = 6) -> pd.
     y = df_mensual["Venta_Diaria"].values.astype(float)
     coef = np.polyfit(x, y, 1)
     poly = np.poly1d(coef)
-    last_idx  = int(df_mensual["idx"].max())
-    last_año  = int(df_mensual["Año_num"].iloc[-1])
-    last_mes  = int(df_mensual["Mes_num"].iloc[-1])
+    last_idx = int(df_mensual["idx"].max())
+    last_año = int(df_mensual["Año_num"].iloc[-1])
+    last_mes = int(df_mensual["Mes_num"].iloc[-1])
     proyecciones = []
     for i in range(1, meses_futuros + 1):
         mes_abs = last_mes - 1 + i
@@ -980,8 +954,7 @@ def _proyectar_tendencia(df_ventas: pd.DataFrame, meses_futuros: int = 6) -> pd.
             "Venta_Diaria": max(0.0, float(poly(last_idx + i))),
             "tipo": "proyección"
         })
-    df_proyecciones = pd.DataFrame(proyecciones)
-    return pd.concat([df_mensual, df_proyecciones], ignore_index=True)
+    return pd.concat([df_mensual, pd.DataFrame(proyecciones)], ignore_index=True)
 
 # ============================================================
 # ESTADO DE SESIÓN
@@ -1021,9 +994,9 @@ with st.sidebar:
             submitted = st.form_submit_button("Desbloquear Sistema", type="primary", use_container_width=True)
             if submitted:
                 if pin_input in USUARIOS_PIN:
-                    st.session_state.auth_status  = True
+                    st.session_state.auth_status = True
                     st.session_state.current_user = USUARIOS_PIN[pin_input]["nombre"]
-                    st.session_state.user_role    = USUARIOS_PIN[pin_input]["rol"]
+                    st.session_state.user_role = USUARIOS_PIN[pin_input]["rol"]
                     st.rerun()
                 else:
                     st.error("⚠️ Clave incorrecta o no registrada.")
@@ -1037,35 +1010,30 @@ with st.sidebar:
 
     st.divider()
     st.title("⚙️ Operaciones Noble")
-    if st.button("📊 Dashboard Principal", use_container_width=True):
-        cambiar_pagina("Dashboard")
-
+    if st.button("📊 Dashboard Principal", use_container_width=True): cambiar_pagina("Dashboard")
     st.divider()
     st.write("**📦 Movimientos de Stock:**")
-    if st.button("📝 Capturar inventario",  use_container_width=True): cambiar_pagina("Inventario")
-    if st.button("📥 Entrada de compras",   use_container_width=True): cambiar_pagina("Ingresos")
-    if st.button("📦 Inventario actual",    use_container_width=True): cambiar_pagina("Consulta")
-
+    if st.button("📝 Capturar inventario", use_container_width=True): cambiar_pagina("Inventario")
+    if st.button("📥 Entrada de compras", use_container_width=True): cambiar_pagina("Ingresos")
+    if st.button("📦 Inventario actual", use_container_width=True): cambiar_pagina("Consulta")
     st.divider()
     st.write("**💰 Ventas:**")
-    if st.button("📈 Registrar Venta Diaria",  use_container_width=True): cambiar_pagina("Ventas")
-    if st.button("📊 Dashboard de Ventas",     use_container_width=True): cambiar_pagina("DashboardVentas")
-    if st.button("📥 Importar Histórico",      use_container_width=True): cambiar_pagina("ImportarVentas")
-
+    if st.button("📈 Registrar Venta Diaria", use_container_width=True): cambiar_pagina("Ventas")
+    if st.button("📊 Dashboard de Ventas", use_container_width=True): cambiar_pagina("DashboardVentas")
+    if st.button("📥 Importar Histórico", use_container_width=True): cambiar_pagina("ImportarVentas")
     st.divider()
     st.write("**💸 Finanzas:**")
-    if st.button("💰 Registrar Gasto",      use_container_width=True): cambiar_pagina("RegistrarGasto")
-    if st.button("📋 Presupuesto Anual",    use_container_width=True): cambiar_pagina("Presupuesto")
-    if st.button("🧾 Base de Costos",       use_container_width=True): cambiar_pagina("BaseCostos")
-    if st.button("📉 Registrar Merma",      use_container_width=True): cambiar_pagina("RegistrarMerma")
+    if st.button("💰 Registrar Gasto", use_container_width=True): cambiar_pagina("RegistrarGasto")
+    if st.button("📋 Presupuesto Anual", use_container_width=True): cambiar_pagina("Presupuesto")
+    if st.button("🧾 Base de Costos", use_container_width=True): cambiar_pagina("BaseCostos")
+    if st.button("📉 Registrar Merma", use_container_width=True): cambiar_pagina("RegistrarMerma")
     if st.button("📊 Dashboard Financiero", use_container_width=True): cambiar_pagina("DashboardFinanciero")
-    if st.button("🛒 Canales de Venta",     use_container_width=True): cambiar_pagina("CanalesVenta")
-
+    if st.button("🛒 Canales de Venta", use_container_width=True): cambiar_pagina("CanalesVenta")
     st.divider()
     st.write("**🖨️ Tickets (58mm):**")
-    if st.button("📋 Lista de Conteo",      use_container_width=True): cambiar_pagina("Impresion")
-    if st.button("🛒 Lista de Compra",      use_container_width=True): cambiar_pagina("ListaCompra")
-    if st.button("📦 Reporte de Stock",     use_container_width=True): cambiar_pagina("ReporteStock")
+    if st.button("📋 Lista de Conteo", use_container_width=True): cambiar_pagina("Impresion")
+    if st.button("🛒 Lista de Compra", use_container_width=True): cambiar_pagina("ListaCompra")
+    if st.button("📦 Reporte de Stock", use_container_width=True): cambiar_pagina("ReporteStock")
 
     st.divider()
     with st.expander("ℹ️ Guía de Clasificación (Grupos)"):
@@ -1116,12 +1084,11 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
         ]
         st.dataframe(pd.DataFrame(grupos_info), hide_index=True, use_container_width=True)
 
-# ZONA ADMIN
+    # ZONA ADMIN
     if st.session_state.user_role == "admin":
         st.divider()
         st.write("**🛠️ Administración Avanzada:**")
-        if st.button("🔒 Corte de Mes", use_container_width=True):
-            cambiar_pagina("CorteMes")
+        if st.button("🔒 Corte de Mes", use_container_width=True): cambiar_pagina("CorteMes")
 
         st.divider()
         with st.expander("👤 Gestión de Accesos"):
@@ -1143,7 +1110,7 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
                             ws_acc.clear()
                             ws_acc.append_row(COLS_ACCESOS)
                             ws_acc.append_rows(nuevo_df[COLS_ACCESOS].values.tolist())
-                            st.cache_data.clear()
+                            obtener_usuarios.clear()
                             st.success(f"Permisos para '{n_nombre}' guardados.")
                             time.sleep(1)
                             st.rerun()
@@ -1165,7 +1132,7 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
                             ws_acc.clear()
                             ws_acc.append_row(COLS_ACCESOS)
                             ws_acc.append_rows(nuevo_df[COLS_ACCESOS].values.tolist())
-                            st.cache_data.clear()
+                            obtener_usuarios.clear()
                             st.success(f"Acceso revocado para {u_del}.")
                             time.sleep(1)
                             st.rerun()
@@ -1183,6 +1150,11 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
                 av_msg    = st.text_area("Mensaje", height=80)
                 av_tipo   = st.selectbox("Tipo", ["info","warning","urgent"],
                                          format_func=lambda x: {"info":"ℹ️ Informativo","warning":"⚠️ Advertencia","urgent":"🚨 Urgente"}[x])
+                av_pagina = st.multiselect("Mostrar en páginas:", 
+                    ["Todas","Dashboard","Inventario","Ingresos","Consulta","Ventas","DashboardVentas",
+                     "ImportarVentas","RegistrarGasto","Presupuesto","BaseCostos","RegistrarMerma",
+                     "DashboardFinanciero","CanalesVenta","Impresion","ListaCompra","ReporteStock","CorteMes"],
+                    default=["Todas"])
                 if st.form_submit_button("📢 Publicar aviso", use_container_width=True):
                     if not av_titulo.strip() or not av_msg.strip():
                         st.error("Título y mensaje son obligatorios.")
@@ -1190,7 +1162,7 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
                         ws_av, err = safe_worksheet(sh, "Avisos")
                         if err:
                             try:
-                                ws_av = sh.add_worksheet(title="Avisos", rows="200", cols="7")
+                                ws_av = sh.add_worksheet(title="Avisos", rows="200", cols="8")
                                 ws_av.append_row(COLS_AVISOS)
                             except Exception as e:
                                 st.error(f"No se pudo crear hoja Avisos: {e}")
@@ -1199,9 +1171,10 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
                             import uuid
                             ws_av.append_row([
                                 str(uuid.uuid4())[:8], av_titulo.strip(), av_msg.strip(),
-                                av_tipo, "TRUE", ts_hermosillo(), st.session_state.current_user,
+                                av_tipo, "TRUE", ts_local(), st.session_state.current_user,
+                                ", ".join(av_pagina)
                             ], value_input_option="USER_ENTERED")
-                            st.cache_data.clear()
+                            cargar_avisos.clear()
                             st.success("Aviso publicado.")
                             time.sleep(0.5)
                             st.rerun()
@@ -1227,7 +1200,7 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
                                     for i, fila in enumerate(celdas[1:], start=2):
                                         if fila[0] == av_id:
                                             ws_av.update(range_name=f"E{i}", values=[["FALSE" if activo else "TRUE"]])
-                                            st.cache_data.clear()
+                                            cargar_avisos.clear()
                                             st.rerun()
                                             break
                                 except Exception as e:
@@ -1268,7 +1241,7 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
                             new_rows = [[rol_perm, p] for p in paginas_sel]
                             if new_rows:
                                 ws_perm.append_rows(new_rows, value_input_option="USER_ENTERED")
-                            st.cache_data.clear()
+                            global PERMISOS
                             PERMISOS = cargar_permisos()
                             st.success("Permisos actualizados.")
                             time.sleep(1)
@@ -1276,7 +1249,7 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
                         except Exception as e:
                             st.error(f"Error: {e}")
 
-    # CATÁLOGO
+    # CATÁLOGO (cacheado)
     if st.session_state.auth_status:
         @st.cache_data(ttl=60)
         def _cargar_catalogo_sidebar():
@@ -1323,7 +1296,8 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
                                     [u, n.strip(), m, p, g, "", uc, um, "", "", "", sm, "", "", "", "", tara_new, "TRUE"],
                                     value_input_option="USER_ENTERED"
                                 )
-                                st.cache_data.clear()
+                                _cargar_catalogo_sidebar.clear()
+                                cargar_datos_integrales.clear()
                                 st.success(f"Insumo '{n.strip()}' creado.")
                                 time.sleep(1)
                                 st.rerun()
@@ -1345,11 +1319,7 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
                         val_activo = str(df_raw_sb[mask].iloc[0].get("Activo", "TRUE")).strip().upper()
                         return nombre if val_activo == "TRUE" else f"⛔ {nombre} (inactivo)"
 
-                    ins_edit = st.selectbox(
-                        "Seleccionar Insumo a Editar:",
-                        sorted(ins_nombres),
-                        format_func=_label_insumo
-                    )
+                    ins_edit = st.selectbox("Seleccionar Insumo a Editar:", sorted(ins_nombres), format_func=_label_insumo)
                     mask = df_raw_sb["Nombre del Insumo"] == ins_edit
                     if not mask.any():
                         st.warning("Insumo no encontrado.")
@@ -1369,11 +1339,7 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
                             e_sm = st.number_input("Stock Mínimo", min_value=0.0, value=limpiar_valor(d.get("Stock Mínimo",0)))
                             e_tara = st.number_input("Tara (kg/gr)", min_value=0.0, value=limpiar_valor(d.get("Tara",0)))
                             activo_actual = str(d.get("Activo", "TRUE")).strip().upper() == "TRUE"
-                            e_activo = st.toggle(
-                                "Insumo Activo",
-                                value=activo_actual,
-                                help="Desactiva para ocultarlo de Captura e Inventario sin borrar su historial."
-                            )
+                            e_activo = st.toggle("Insumo Activo", value=activo_actual, help="Desactiva para ocultarlo de Captura e Inventario sin borrar su historial.")
                             if st.form_submit_button("💾 Actualizar Insumo"):
                                 if not e_n.strip():
                                     st.error("El nombre no puede quedar vacío.")
@@ -1390,7 +1356,8 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
                                                 range_name=f"A{idx}:R{idx}",
                                                 values=[[e_u, e_n.strip(), e_m, e_p, e_g, "", e_uc, e_um, "", "", "", e_sm, "", "", "", "", e_tara, "TRUE" if e_activo else "FALSE"]]
                                             )
-                                            st.cache_data.clear()
+                                            _cargar_catalogo_sidebar.clear()
+                                            cargar_datos_integrales.clear()
                                             st.success("Catálogo actualizado.")
                                             time.sleep(1)
                                             st.rerun()
@@ -1402,7 +1369,6 @@ Todo lo que hace falta comprar para mejorar la operación de Noble.
 # ============================================================
 pagina = st.session_state.pagina
 
-# ── PANTALLA DE BIENVENIDA SI NO HA INICIADO SESIÓN ──────────
 if not st.session_state.auth_status:
     st.markdown("""
     <div style='text-align: center; padding: 4rem 1rem;'>
@@ -1421,7 +1387,7 @@ if pagina == "Dashboard":
         st.stop()
     df_raw, df_historial = cargar_datos_integrales()
     st.title("📊 Dashboard Operativo")
-    ahora = ahora_hermosillo()
+    ahora = ahora_local()
     dias_faltantes = calendar.monthrange(ahora.year, ahora.month)[1] - ahora.day
     if dias_faltantes <= 4:
         st.info(f"⏳ A {dias_faltantes} días del fin de mes. Recuerda ejecutar el **Corte de Mes**.")
@@ -1437,10 +1403,13 @@ if pagina == "Dashboard":
         if not df_v_mes_dash.empty and "Meta_Mensual" in df_v_mes_dash.columns:
             meta_mes_dash = limpiar_valor(df_v_mes_dash["Meta_Mensual"].iloc[-1]) or meta_mes_dash
         avance_dash = (venta_acum_dash / meta_mes_dash * 100) if meta_mes_dash > 0 else 0.0
-        c1, c2, c3 = st.columns(3)
+        dias_con_venta_dash = int((df_v_mes_dash["Venta_Diaria"] > 0).sum()) if not df_v_mes_dash.empty else 0
+        prom_diario_dash = venta_acum_dash / dias_con_venta_dash if dias_con_venta_dash > 0 else 0.0
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Venta acumulada", f"${venta_acum_dash:,.2f}")
         c2.metric("Meta mensual", f"${meta_mes_dash:,.2f}")
         c3.metric("Avance", f"{avance_dash:.1f}%")
+        c4.metric("Promedio diario", f"${prom_diario_dash:,.2f}")
     else:
         st.info("Aún no hay ventas registradas este mes.")
     df_actual = obtener_ultimo_inventario(df_historial)
@@ -1479,7 +1448,7 @@ elif pagina == "Inventario":
         st.stop()
     df_raw, df_historial = cargar_datos_integrales()
     st.title("📝 Capturar inventario")
-    mostrar_avisos()
+    mostrar_avisos("Inventario")
     if not st.session_state.auth_status:
         st.error("🔒 Autenticación requerida.")
         st.stop()
@@ -1489,8 +1458,7 @@ elif pagina == "Inventario":
     responsables = st.session_state.responsables or ["Raúl"]
     resp_idx = responsables.index(st.session_state.current_user) if st.session_state.current_user in responsables else 0
     with col_r:
-        r_sel = st.selectbox("👤 Responsable", responsables, index=resp_idx,
-                             disabled=(st.session_state.user_role != "admin"))
+        r_sel = st.selectbox("👤 Responsable", responsables, index=resp_idx, disabled=(st.session_state.user_role != "admin"))
     df_u = df_raw[df_raw["Unidad de Negocio"] == u_sel] if not df_raw.empty else pd.DataFrame()
     with col_g:
         grps  = sorted(df_u["Grupo"].dropna().unique().tolist()) if not df_u.empty and "Grupo" in df_u.columns else GRUPOS
@@ -1558,7 +1526,7 @@ elif pagina == "Inventario":
                 if err:
                     st.error(err)
                 else:
-                    fh = ts_hermosillo()
+                    fh = ts_local()
                     filas = []
                     for _, r_ed in edited_df.iterrows():
                         nom = r_ed["Insumo"]
@@ -1586,7 +1554,7 @@ elif pagina == "Inventario":
                         ))
                     ok, msg = append_rows_con_retry(ws_his, filas)
                     if ok:
-                        st.cache_data.clear()
+                        cargar_datos_integrales.clear()
                         st.success(f"Inventario masivo registrado: {len(filas)} insumos. {msg}")
                         time.sleep(0.5)
                         st.rerun()
@@ -1660,7 +1628,7 @@ elif pagina == "Inventario":
                 if err:
                     st.error(err)
                 else:
-                    fh    = ts_hermosillo()
+                    fh    = ts_local()
                     filas = []
                     for n, info in regs_form.items():
                         dm = info["row"]
@@ -1675,7 +1643,7 @@ elif pagina == "Inventario":
                         ))
                     ok, msg = append_rows_con_retry(ws_his, filas)
                     if ok:
-                        st.cache_data.clear()
+                        cargar_datos_integrales.clear()
                         st.success(f"¡Inventario registrado! {msg}")
                         time.sleep(0.5)
                         st.rerun()
@@ -1689,7 +1657,7 @@ elif pagina == "Ingresos":
         st.stop()
     df_raw, df_historial = cargar_datos_integrales()
     st.title("📥 Entrada de compras")
-    mostrar_avisos()
+    mostrar_avisos("Ingresos")
     if not st.session_state.auth_status:
         st.error("🔒 Autenticación requerida.")
         st.stop()
@@ -1700,8 +1668,7 @@ elif pagina == "Ingresos":
     responsables = st.session_state.responsables or ["Raúl"]
     resp_idx = responsables.index(st.session_state.current_user) if st.session_state.current_user in responsables else 0
     with col_r:
-        r_sel = st.selectbox("👤 Responsable:", responsables, index=resp_idx,
-                             disabled=(st.session_state.user_role != "admin"))
+        r_sel = st.selectbox("👤 Responsable:", responsables, index=resp_idx, disabled=(st.session_state.user_role != "admin"))
     df_u = df_raw[df_raw["Unidad de Negocio"] == u_sel] if not df_raw.empty else pd.DataFrame()
     if df_u.empty:
         st.warning("Sin insumos registrados para esta unidad.")
@@ -1731,7 +1698,7 @@ elif pagina == "Ingresos":
                 st.error(err)
                 st.session_state["_procesando_bulk"] = False
             else:
-                fh = ts_hermosillo()
+                fh = ts_local()
                 filas_bulk = []
                 for _, r_ed in edited_df.iterrows():
                     ingreso = limpiar_valor(r_ed["+ Ingreso"])
@@ -1761,7 +1728,7 @@ elif pagina == "Ingresos":
                 else:
                     ok, msg = append_rows_con_retry(ws_his, filas_bulk)
                     if ok:
-                        st.cache_data.clear()
+                        cargar_datos_integrales.clear()
                         st.success(f"Ingreso masivo registrado: {len(filas_bulk)} refs. {msg}")
                         time.sleep(1)
                         st.rerun()
@@ -1815,7 +1782,7 @@ elif pagina == "Ingresos":
                     st.error(err)
                     st.session_state["_procesando_ingreso"] = False
                 else:
-                    fh    = ts_hermosillo()
+                    fh    = ts_local()
                     filas = []
                     for n, info in regs_ingreso.items():
                         dm = info["row"]
@@ -1831,7 +1798,7 @@ elif pagina == "Ingresos":
                     ok, msg = append_rows_con_retry(ws_his, filas)
                     st.session_state["_procesando_ingreso"] = False
                     if ok:
-                        st.cache_data.clear()
+                        cargar_datos_integrales.clear()
                         st.success(f"Ingreso registrado. {msg}")
                         time.sleep(0.5)
                         st.rerun()
@@ -1888,7 +1855,7 @@ elif pagina == "Consulta":
     st.divider()
     csv = df_final.to_csv(index=False).encode("utf-8")
     st.download_button("📥 Descargar Reporte (CSV)", data=csv,
-                       file_name=f"Inventario_{u_sel}_{ahora_hermosillo().strftime('%Y%m%d_%H%M')}.csv",
+                       file_name=f"Inventario_{u_sel}_{ahora_local().strftime('%Y%m%d_%H%M')}.csv",
                        mime="text/csv", use_container_width=True)
 
 # ── VENTAS — REGISTRO DIARIO ─────────────────────────────────
@@ -1897,12 +1864,12 @@ elif pagina == "Ventas":
         st.error("No tienes permiso para esta página.")
         st.stop()
     st.title("📈 Registrar Venta Diaria — Noble")
-    mostrar_avisos()
+    mostrar_avisos("Ventas")
     if not st.session_state.auth_status:
         st.error("🔒 Autenticación requerida.")
         st.stop()
     df_ventas = cargar_ventas()
-    hoy = ahora_hermosillo().date()
+    hoy = ahora_local().date()
     ya_registrado = False
     if not df_ventas.empty and "Fecha" in df_ventas.columns:
         ya_registrado = any(f.date() == hoy for f in df_ventas["Fecha"].dropna())
@@ -1914,8 +1881,7 @@ elif pagina == "Ventas":
     with col_f:
         fecha_venta = st.date_input("📅 Fecha del registro:", value=hoy, max_value=hoy)
     with col_r:
-        responsable_v = st.selectbox("👤 Responsable:", responsables, index=resp_idx,
-                                     disabled=(st.session_state.user_role != "admin"))
+        responsable_v = st.selectbox("👤 Responsable:", responsables, index=resp_idx, disabled=(st.session_state.user_role != "admin"))
     st.divider()
     meta_default = 145000.0
     dias_default = 26
@@ -1992,7 +1958,7 @@ elif pagina == "Ventas":
                 )
                 ok, msg = append_rows_con_retry(ws_v, [fila])
                 if ok:
-                    st.cache_data.clear()
+                    cargar_ventas.clear()
                     st.success(f"✅ Venta del {fecha_venta.strftime('%d/%m/%Y')} registrada. Total: ${venta_total:,.2f}")
                     time.sleep(0.5)
                     st.rerun()
